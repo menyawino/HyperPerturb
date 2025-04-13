@@ -9,12 +9,12 @@ with open("requirements.txt", "r", encoding="utf-8") as f:
 setup(
     name="hyperpreturb",
     version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    author="Omar Ahmed",
+    author_email="menyawino@gmail.com",
     description="Advanced hyperbolic gene perturbation framework",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/hyperperturb",
+    url="https://github.com/menyawino/HyperPerturb",
     packages=find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",

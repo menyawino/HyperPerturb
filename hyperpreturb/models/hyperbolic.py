@@ -1,7 +1,7 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
 import numpy as np
-from hyperpreturb.final_files.utils.manifolds import PoincareBall
+from hyperpreturb.utils.manifolds import PoincareBall
 
 # ----------------------------
 # Hyperbolic Optimization Tools

@@ -6,9 +6,9 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from hyperpreturb.final_files.models import HyperPerturbModel
-from hyperpreturb.final_files.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
-from hyperpreturb.final_files.utils.manifolds import PoincareBall
+from hyperpreturb.models import HyperPerturbModel
+from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
+from hyperpreturb.utils.manifolds import PoincareBall
 
 # Configure logging
 logging.basicConfig(

@@ -13,14 +13,14 @@ Main Components:
 __version__ = '0.1.0'
 
 # Import key modules
-from hyperpreturb.final_files.data import (
+from hyperpreturb.data import (
     download_data, download_string_network, preprocess_data, 
     prepare_perturbation_data, load_and_preprocess_perturbation_data
 )
-from hyperpreturb.final_files.utils import PoincareBall
-from hyperpreturb.final_files.models import HyperPerturbModel
-from hyperpreturb.final_files.models.hyperbolic import (
+from hyperpreturb.utils.manifolds import PoincareBall
+from hyperpreturb.models import HyperPerturbModel
+from hyperpreturb.models.hyperbolic import (
     HyperbolicAdam, QuantumAnnealer, HyperbolicDense, HyperbolicAttention
 )
-from hyperpreturb.final_files.models.train import train_model
-from hyperpreturb.final_files.models.inference import HyperPerturbInference
+from hyperpreturb.models.train import train_model
+from hyperpreturb.models.inference import HyperPerturbInference

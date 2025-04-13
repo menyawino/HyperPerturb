@@ -24,7 +24,7 @@ HyperPerturb is a state-of-the-art framework for predicting optimal gene perturb
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/hyperperturb.git
+   git clone https://github.com/menyawino/HyperPerturb
    cd hyperperturb
    ```
 
@@ -136,17 +136,5 @@ HyperPerturb leverages hyperbolic geometry for several key advantages:
 
 ## Citation
 
-If you use HyperPerturb in your research, please cite our work:
-
-```
-@article{your_name2025hyperperturb,
-  title={HyperPerturb: Predicting Optimal Gene Perturbations using Hyperbolic Geometry},
-  author={Your Name and Co-authors},
-  journal={Journal of Computational Biology},
-  year={2025}
-}
-```
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+This is still in the development phase, so you are free to use it as you wish
+I appreciate feedback and collaboration oppurtunities!

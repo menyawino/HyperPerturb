@@ -2,10 +2,10 @@
 Core model architecture for the HyperPerturb framework.
 """
 
-from hyperpreturb.final_files.models.hyperbolic import (
+from hyperpreturb.models.hyperbolic import (
     HyperbolicAdam, QuantumAnnealer, HyperbolicDense, HyperbolicAttention
 )
-from hyperpreturb.final_files.utils.manifolds import PoincareBall
+from hyperpreturb.utils.manifolds import PoincareBall
 import tensorflow as tf
 import tensorflow_probability as tfp
 
