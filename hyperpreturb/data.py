@@ -196,26 +196,70 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
     Returns:
         Tuple of (processed RNA data, adjacency matrix)
     """
+    import os
+    from pathlib import Path
+    
+    # Handle default paths for data files that exist in the project
+    if rna_path is None or not os.path.exists(rna_path):
+        default_rna_path = Path(__file__).parent.parent / "data" / "raw" / "FrangiehIzar2021_RNA.h5ad"
+        if os.path.exists(default_rna_path):
+            print(f"Using default RNA data file: {default_rna_path}")
+            rna_path = default_rna_path
+        else:
+            raise FileNotFoundError(f"RNA data file not found at {rna_path}")
+    
+    if protein_path is None:
+        default_protein_path = Path(__file__).parent.parent / "data" / "raw" / "FrangiehIzar2021_protein.h5ad"
+        if os.path.exists(default_protein_path):
+            print(f"Found protein data file: {default_protein_path}")
+            protein_path = default_protein_path
+    
     # Load RNA data
+    print(f"Loading RNA data from {rna_path}")
     rna_adata = sc.read_h5ad(rna_path)
     
     # Preprocess RNA data
     rna_adata = preprocess_data(rna_adata)
     
+    # Prepare perturbation data
+    rna_adata = prepare_perturbation_data(rna_adata)
+    
     # Compute adjacency matrix from PPI network if provided
     adj_matrix = None
-    if network_path:
-        network_df = load_protein_network(network_path)
-        gene_list = rna_adata.var_names.tolist()
-        adj_matrix = create_adjacency_matrix(network_df, gene_list)
+    if network_path and os.path.exists(network_path):
+        try:
+            from hyperpreturb.utils.data_loader import load_protein_network, create_adjacency_matrix
+            print(f"Loading protein network from {network_path}")
+            network_df = load_protein_network(network_path)
+            gene_list = rna_adata.var_names.tolist()
+            adj_matrix = create_adjacency_matrix(network_df, gene_list)
+        except Exception as e:
+            print(f"Error loading protein network: {e}")
     
     # If protein data is provided, integrate it
-    if protein_path:
-        protein_adata = sc.read_h5ad(protein_path)
-        # Process and integrate protein data
-        # This is a placeholder - implementation depends on specific requirements
-        
-    # Prepare perturbation effects
-    rna_adata = prepare_perturbation_data(rna_adata)
+    if protein_path and os.path.exists(protein_path):
+        try:
+            print(f"Loading protein data from {protein_path}")
+            protein_adata = sc.read_h5ad(protein_path)
+            
+            # Match protein data with RNA data
+            common_cells = list(set(protein_adata.obs_names).intersection(set(rna_adata.obs_names)))
+            if len(common_cells) > 0:
+                print(f"Found {len(common_cells)} common cells between RNA and protein data")
+                
+                # Subset both datasets to common cells
+                rna_subset = rna_adata[common_cells]
+                protein_subset = protein_adata[common_cells]
+                
+                # Add protein data as an additional layer in the RNA AnnData object
+                rna_subset.layers['protein'] = protein_subset.X
+                
+                # Use the subset with both modalities
+                rna_adata = rna_subset
+                print("Successfully integrated protein data with RNA data")
+            else:
+                print("No common cells found between RNA and protein data")
+        except Exception as e:
+            print(f"Error integrating protein data: {e}")
     
     return rna_adata, adj_matrix

@@ -8,7 +8,7 @@ class HyperbolicPerturbationModel(tf.keras.Model):
     A model for predicting gene expression changes in response to perturbations,
     using hyperbolic embeddings to capture the hierarchical structure of gene regulatory networks.
     """
-    def __init__(self, n_genes, n_perturbations, embedding_dim=32, hidden_dim=64, adj_matrix=None):
+    def __init__(self, n_genes, n_perturbations, embedding_dim=32, hidden_dim=64, curvature=1.0, adj_matrix=None):
         """
         Initialize the HyperbolicPerturbationModel.
         
@@ -17,6 +17,7 @@ class HyperbolicPerturbationModel(tf.keras.Model):
             n_perturbations: Number of possible perturbations
             embedding_dim: Dimension of embeddings
             hidden_dim: Dimension of hidden layers
+            curvature: Curvature of the hyperbolic space (default: 1.0)
             adj_matrix: Adjacency matrix from PPI network (optional)
         """
         super(HyperbolicPerturbationModel, self).__init__()
@@ -25,9 +26,10 @@ class HyperbolicPerturbationModel(tf.keras.Model):
         self.n_perturbations = n_perturbations
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim
+        self.curvature = curvature
         
         # Initialize manifold
-        self.manifold = PoincareBall(dim=embedding_dim)
+        self.manifold = PoincareBall(dim=embedding_dim, curvature=curvature)
         
         # Gene embeddings in hyperbolic space
         self.gene_embeddings = self.add_weight(
