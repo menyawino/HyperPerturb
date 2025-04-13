@@ -1,130 +1,152 @@
-# HyperPerturb: Hierarchical Optimal Genetic Perturbation Design
-**A Framework for Biology-Aware Experimental Design Using Hyperbolic Reinforcement Learning**
+# HyperPerturb: Advanced Hyperbolic Gene Perturbation Framework
 
-<div align="center">
-  <img src="https://via.placeholder.com/800x400?text=Hyperbolic+GRN+Embedding+Visualization" alt="Hyperbolic Embeddings">
-  <p><em>Figure 1: Poincaré ball embeddings of gene regulatory networks</em></p>
-</div>
+HyperPerturb is a state-of-the-art framework for predicting optimal gene perturbations using hyperbolic geometry and deep learning. This framework integrates hyperbolic neural networks, reinforcement learning, and quantum-inspired optimization techniques to model complex gene regulatory relationships in high-dimensional biological data.
 
-## 📖 Overview  
-HyperPerturb revolutionizes functional genomics by combining **hyperbolic neural networks** with **deep reinforcement learning** to design optimal CRISPR perturbation sequences. This framework addresses three fundamental challenges in gene regulatory network (GRN) inference:  
+## Key Features
 
-1. **Hierarchical Preservation**: Models evolutionary relationships in Poincaré ball embeddings  
-2. **Resource Efficiency**: Reduces required experiments by 63% vs grid search ([Fig 3](#-results))  
-3. **Causal Discovery**: Identifies upstream regulators through perturbation trajectory analysis  
+- **Hyperbolic Representation Learning**: Models gene expression data in hyperbolic space to better capture hierarchical relationships
+- **Quantum-Inspired Optimization**: Leverages quantum annealing schedules for efficient training
+- **Riemannian Geometry**: Custom Riemannian optimizers for accurate gradient updates in hyperbolic space
+- **Neuromorphic Regularization**: STDP-inspired regularization for biologically plausible models
+- **Adaptive Curriculum Learning**: Progressive complexity increase for robust training
+- **Distributed Training**: Efficient multi-GPU training via TensorFlow's distribution strategies
+- **High-Performance Computing**: XLA compilation for accelerated model training and inference
 
-**Key Innovation**: First implementation of manifold-constrained policy gradients for biological experimental design.
+## Installation
 
----
+### Prerequisites
 
-## 🚀 Features  
-### Core Components  
-- 🌀 **Hyperbolic Graph Encoder** (Poincaré GCN with adaptive curvature)  
-- 📈 **Curriculum RL** (Progressive complexity scaling from yeast to human GRNs)  
-- 🧠 **Neuromorphic Regularization** (STDP-based credit assignment)  
+- Python 3.8+
+- CUDA-compatible GPU (recommended for training)
+- TensorFlow 2.8+
 
-### Advanced Techniques  
-| Component | Description |  
-|-----------|-------------|  
-| `RiemannianAdam` | Parallel transport-optimized gradients |  
-| `HaarMeasureInit` | Quantum-inspired unitary initialization |  
-| `XLA-Fused Ops` | 4.2× faster hyperbolic operations |  
+### Setup
 
-## Novel Riemannian Update Rule
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/hyperperturb.git
+   cd hyperperturb
+   ```
 
-$$
-\nabla_\theta J(\theta) = \mathbb{E}\left[\sum_t \nabla_\theta \log \pi_\theta(a_t\mid s_t) \, Q^\pi(s_t, a_t)\right]
-$$
-<p>with $T_{\gamma\leftarrow0}^t$ parallel transport</p>
+2. Create and activate a virtual environment:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
 
----
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## ⚙️ Installation  
-**Prerequisites**  
-- CUDA 11.7+  
-- Python 3.9+  
+4. Install the package in development mode:
+   ```bash
+   pip install -e .
+   ```
 
-git clone https://github.com/yourusername/hyperperturb.git
-cd hyperperturb
-conda create -n hyperperturb python=3.9
-conda activate hyperperturb
-pip install -r requirements.txt
+## Data Preparation
 
-**Data Preparation**  
-Download STRING database
+HyperPerturb supports various single-cell RNA-seq and perturbation datasets:
 
-wget https://stringdb-static.org/download/STRINGv11.5/9606.protein.links.full.v11.5.txt.gz -P data/
-Preprocess hematopoietic dataset
+1. Download preprocessed datasets:
+   ```bash
+   bash scripts/download_string.sh
+   ```
 
-python -c "from hyperperturb.loaders import GenomicsDataLoader; GenomicsDataLoader(dataset_id='GSE123904').fetch_data().preprocess()"
+2. Preprocess your own data:
+   ```python
+   from hyperpreturb import preprocess_data
+   
+   # Load and preprocess data
+   adata = preprocess_data("path/to/your/data.h5ad", 
+                          output_path="data/processed/your_processed_data.h5ad")
+   ```
 
+## Model Training
 
----
+Train the HyperPerturb model with customizable parameters:
 
-## 🧬 Usage  
-### Basic Training  
+```python
+from hyperpreturb import load_and_preprocess_perturbation_data, train_model
 
-python main.py --epochs 200 --curvature 0.8 --quantum
-text
-
-### Key Arguments  
-| Parameter | Description | Default |  
-|-----------|-------------|---------|  
-| `--curvature` | Poincaré ball curvature | 1.0 |  
-| `--quantum` | Enable quantum annealing | `False` |  
-| `--sparsity` | Target connection density | 0.15 |  
-
-### Advanced Configuration  
-from hyperperturb import HyperPerturbTrainer
-trainer = HyperPerturbTrainer(
-curvature=0.8,
-reward_weights={'info_gain': 1.0, 'hierarchy': 0.2},
-lr_schedule='quantum'
+# Load data
+adata, adj_matrix = load_and_preprocess_perturbation_data(
+    "data/raw/FrangiehIzar2021_RNA.h5ad",
+    network_path="data/raw/9606.protein.links.full.v11.5.txt"
 )
-metrics = trainer.train()
-text
 
----
+# Train model
+model, history = train_model(
+    adata,
+    adj_matrix=adj_matrix,
+    epochs=200,
+    batch_size=128,
+    learning_rate=3e-4,
+    curvature=1.0
+)
+```
 
-## 📊 Results  
-### Benchmark Performance  
-| Metric | Random | Euclidean DQN | HyperPerturb |  
-|--------|--------|---------------|--------------|  
-| Perturbation Efficiency | 1.00 | 3.17 | **6.94** |  
-| GRN AUPRC | 0.62 | 0.78 | **0.92** |  
-| Hierarchy Consistency | 0.41 | 0.53 | **0.89** |
+## Inference
 
-### Biological Validation  
-| Target Class | Validation Rate |  
-|--------------|-----------------|  
-| Erythroid | 92% (n=38) |  
-| Myeloid | 87% (n=28) |  
-| Novel | 82% (n=15) |
+Use a trained model to predict optimal perturbations:
 
-<div align="center">
-  <img src="https://via.placeholder.com/600x300?text=Training+Curves" alt="Training Progression">
-  <p><em>Figure 2: Curriculum learning with dynamic curvature adaptation</em></p>
-</div>
+```python
+from hyperpreturb import HyperPerturbInference
 
----
+# Initialize inference engine
+inference = HyperPerturbInference("models/saved/hyperperturb-20250413-123456")
 
-## 🧠 Technical Insights  
-### Mathematical Foundations  
-**Hyperbolic Operations**
+# Predict perturbations
+test_expression = adata[0:10].X.toarray()
+top_k_indices, scores, values = inference.predict_perturbations(
+    test_expression,
+    k=5  # Top-5 perturbations
+)
 
-$$
-\operatorname{expmap}_0(\mathbf{v}) = \tanh\left(\sqrt{\kappa}\,|\mathbf{v}|\right)\frac{\mathbf{v}}{\sqrt{\kappa}\,|\mathbf{v}|}
-$$
+# Interpret results
+results_df = inference.interpret_perturbations(adata, top_k_indices)
+print(results_df)
+```
 
-**Policy Gradient Update**
+## Framework Architecture
 
-$$
-\nabla_\theta J(\theta) = \mathbb{E}\left[\sum_t \nabla_\theta \log \pi_\theta(a_t\mid s_t) \, Q^\pi(s_t, a_t)\right]
-$$
+```
+hyperpreturb/
+├── __init__.py         # Main package initialization
+├── data.py             # Data download and preprocessing
+├── models/
+│   ├── __init__.py     # Core model architecture
+│   ├── hyperbolic.py   # Hyperbolic layers and optimizers
+│   ├── train.py        # Training pipeline
+│   └── inference.py    # Inference engine
+└── utils/
+    ├── __init__.py     # Utility functions
+    ├── data_loader.py  # Data loading utilities
+    └── manifolds.py    # Riemannian manifold implementations
+```
 
-### Optimization Landscape  
-| Technique | Speedup | Memory Reduction |
-|-----------|---------|------------------|
-| XLA Fusion | 4.2×   | -               |
-| Gradient Checkpointing   | 1.8×   | 3.7×            |
-| Mixed Precision Training   .
+## Hyperbolic Space Advantages
+
+HyperPerturb leverages hyperbolic geometry for several key advantages:
+
+1. **Efficient Embedding of Hierarchies**: Hyperbolic space can embed hierarchical structures with lower distortion than Euclidean space
+2. **Continuous Hierarchy Representation**: Enables smooth transitions between hierarchical levels
+3. **Expressive Power**: The curvature parameter provides an additional degree of freedom for modeling
+4. **Distance Preservation**: Better preserves distances between data points with hierarchical relationships
+
+## Citation
+
+If you use HyperPerturb in your research, please cite our work:
+
+```
+@article{your_name2025hyperperturb,
+  title={HyperPerturb: Predicting Optimal Gene Perturbations using Hyperbolic Geometry},
+  author={Your Name and Co-authors},
+  journal={Journal of Computational Biology},
+  year={2025}
+}
+```
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
