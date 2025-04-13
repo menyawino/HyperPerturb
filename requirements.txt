@@ -1,0 +1,6 @@
+# requirements.txt
+tensorflow==2.15.0
+tensorflow-probability==0.23.0
+scanpy==1.10.0
+pandas==2.1.0
+numpy==1.26.0
