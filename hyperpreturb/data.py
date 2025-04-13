@@ -6,7 +6,7 @@ import tensorflow as tf
 import scipy.sparse as sp
 import numpy as np
 from pathlib import Path
-from hyperpreturb.final_files.utils.data_loader import load_protein_network, create_adjacency_matrix
+from hyperpreturb.utils.data_loader import load_protein_network, create_adjacency_matrix
 
 def download_data(url, output_path, force=False):
     """Download data from a given URL.
@@ -69,7 +69,7 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=50):
     """Preprocess raw data and optionally save the processed version.
     
     Args:
-        input_path: Path to the raw data file
+        input_path: Path to the raw data file or AnnData object
         output_path: Path to save the processed data. If None, doesn't save.
         n_neighbors: Number of neighbors for the neighborhood graph. Default: 15
         n_pcs: Number of principal components. Default: 50
@@ -78,7 +78,13 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=50):
         Processed AnnData object
     """
     print(f"Preprocessing data from {input_path}")
-    adata = sc.read(input_path)
+    
+    # Handle both string paths and AnnData objects
+    if isinstance(input_path, str) or isinstance(input_path, Path):
+        adata = sc.read(input_path)
+    else:
+        # Assume input_path is already an AnnData object
+        adata = input_path
     
     # Basic preprocessing
     sc.pp.filter_cells(adata, min_genes=200)
@@ -112,7 +118,7 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=50):
     
     return adata
 
-def prepare_perturbation_data(adata, ctrl_key='condition', ctrl_value='control'):
+def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-targeting'):
     """Prepare perturbation data by computing fold changes compared to control.
     
     Args:
@@ -123,8 +129,33 @@ def prepare_perturbation_data(adata, ctrl_key='condition', ctrl_value='control')
     Returns:
         AnnData object with added perturbation effects
     """
+    # First check if the control key exists in the data
+    if ctrl_key not in adata.obs.columns:
+        # Try to find alternative control columns
+        potential_keys = ['perturbation', 'perturbation_type', 'perturbation_2']
+        for key in potential_keys:
+            if key in adata.obs.columns:
+                ctrl_key = key
+                print(f"Using '{ctrl_key}' as control key. Available values: {adata.obs[ctrl_key].unique()}")
+                # Try to identify control samples
+                if 'non-targeting' in adata.obs[ctrl_key].unique():
+                    ctrl_value = 'non-targeting'
+                elif 'control' in adata.obs[ctrl_key].unique():
+                    ctrl_value = 'control'
+                break
+    
+    if ctrl_key not in adata.obs.columns:
+        raise ValueError(f"Could not find control key in data. Available columns: {list(adata.obs.columns)}")
+    
+    print(f"Using '{ctrl_key}' column with control value '{ctrl_value}'")
+    
     # Split data into control and perturbation groups
     is_control = adata.obs[ctrl_key] == ctrl_value
+    
+    if sum(is_control) == 0:
+        raise ValueError(f"No control samples found with {ctrl_key}={ctrl_value}. Available values: {adata.obs[ctrl_key].unique()}")
+    
+    print(f"Found {sum(is_control)} control samples out of {adata.n_obs} total samples")
     
     # Get control expression
     control_cells = adata[is_control]

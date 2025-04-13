@@ -302,3 +302,169 @@ class HyperbolicAttention(tf.keras.layers.Layer):
             'dropout_rate': self.dropout_rate
         })
         return config
+
+# ----------------------------
+# Hyperbolic Layer Classes
+# ----------------------------
+class HyperbolicPoincareBall:
+    """
+    Implementation of operations in the Poincaré ball model of hyperbolic space.
+    """
+    def __init__(self, dim, curvature=-1.0):
+        """
+        Initialize the Poincaré ball.
+        
+        Args:
+            dim: Dimensionality of the hyperbolic space
+            curvature: Curvature of the hyperbolic space (default: -1.0)
+        """
+        self.dim = dim
+        self.c = tf.convert_to_tensor(-curvature, dtype=tf.float32)
+        self.eps = 1e-10
+
+    def mobius_addition(self, x, y):
+        """
+        Möbius addition in the Poincaré ball.
+        
+        Args:
+            x, y: Points in the Poincaré ball
+            
+        Returns:
+            Result of Möbius addition
+        """
+        x2 = tf.reduce_sum(tf.square(x), axis=-1, keepdims=True)
+        y2 = tf.reduce_sum(tf.square(y), axis=-1, keepdims=True)
+        xy = tf.reduce_sum(x * y, axis=-1, keepdims=True)
+        
+        num = (1 + 2 * self.c * xy + self.c * y2) * x + (1 - self.c * x2) * y
+        denom = 1 + 2 * self.c * xy + self.c * self.c * x2 * y2
+        
+        return num / (denom + self.eps)
+
+    def mobius_matrix_multiplication(self, M, x):
+        """
+        Möbius matrix multiplication in the Poincaré ball.
+        
+        Args:
+            M: Matrix
+            x: Point in the Poincaré ball
+            
+        Returns:
+            Result of Möbius matrix multiplication
+        """
+        x_norm = tf.norm(x, axis=-1, keepdims=True)
+        mx = tf.matmul(x, M, transpose_b=True)
+        mx_norm = tf.norm(mx, axis=-1, keepdims=True)
+        
+        # Handle zero vectors
+        res_c = tf.tanh(self.c * mx_norm / (1.0 + self.eps)) * mx / (mx_norm + self.eps)
+        return tf.where(tf.abs(x_norm) < self.eps, mx, res_c)
+        
+    def exponential_map(self, x, v):
+        """
+        Exponential map at point x with tangent vector v.
+        
+        Args:
+            x: Point in the Poincaré ball
+            v: Tangent vector at x
+            
+        Returns:
+            Result of exponential map
+        """
+        v_norm = tf.norm(v, axis=-1, keepdims=True)
+        second_term = tf.tanh(tf.sqrt(self.c) * v_norm / 2) * v / (tf.sqrt(self.c) * v_norm + self.eps)
+        
+        # Handle zero tangent vectors
+        return tf.where(tf.abs(v_norm) < self.eps, x, self.mobius_addition(x, second_term))
+        
+    def logarithmic_map(self, x, y):
+        """
+        Logarithmic map at point x with target y.
+        
+        Args:
+            x: Point in the Poincaré ball
+            y: Target point in the Poincaré ball
+            
+        Returns:
+            Result of logarithmic map
+        """
+        addition = self.mobius_addition(-x, y)
+        addition_norm = tf.norm(addition, axis=-1, keepdims=True)
+        
+        log_term = tf.math.atanh(tf.sqrt(self.c) * addition_norm) * addition / (tf.sqrt(self.c) * addition_norm + self.eps)
+        
+        # Handle zero vectors
+        return tf.where(tf.abs(addition_norm) < self.eps, y - x, 2 * log_term)
+
+class HyperbolicLayer(tf.keras.layers.Layer):
+    """
+    A neural network layer that operates in hyperbolic space.
+    """
+    def __init__(self, manifold, units, activation=None, use_bias=True, **kwargs):
+        """
+        Initialize a hyperbolic layer.
+        
+        Args:
+            manifold: The hyperbolic manifold (e.g., PoincareBall)
+            units: Number of output units
+            activation: Activation function to apply
+            use_bias: Whether to include a bias term
+        """
+        super(HyperbolicLayer, self).__init__(**kwargs)
+        self.manifold = manifold
+        self.units = units
+        self.activation = tf.keras.activations.get(activation)
+        self.use_bias = use_bias
+        
+    def build(self, input_shape):
+        """
+        Build the layer weights.
+        
+        Args:
+            input_shape: Shape of input tensor
+        """
+        input_dim = input_shape[-1]
+        
+        self.weight_matrix = self.add_weight(
+            name="hyperbolic_weight",
+            shape=[input_dim, self.units],
+            initializer=tf.keras.initializers.GlorotUniform(),
+            trainable=True
+        )
+        
+        if self.use_bias:
+            self.bias = self.add_weight(
+                name="hyperbolic_bias",
+                shape=[1, self.units],
+                initializer=tf.keras.initializers.Zeros(),
+                trainable=True
+            )
+        
+        super(HyperbolicLayer, self).build(input_shape)
+        
+    def call(self, inputs):
+        """
+        Forward pass of the hyperbolic layer.
+        
+        Args:
+            inputs: Input tensor in hyperbolic space
+            
+        Returns:
+            Output tensor in hyperbolic space
+        """
+        # Apply matrix multiplication in hyperbolic space
+        outputs = self.manifold.mobius_matrix_multiplication(self.weight_matrix, inputs)
+        
+        # Apply bias in hyperbolic space if needed
+        if self.use_bias:
+            outputs = self.manifold.mobius_addition(outputs, self.bias)
+        
+        # Apply activation function if specified
+        if self.activation is not None:
+            # We need to map to tangent space, apply activation, and map back
+            origin = tf.zeros_like(outputs)
+            tangent = self.manifold.logarithmic_map(origin, outputs)
+            activated = self.activation(tangent)
+            outputs = self.manifold.exponential_map(origin, activated)
+            
+        return outputs
