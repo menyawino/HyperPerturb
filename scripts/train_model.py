@@ -29,7 +29,7 @@ from hyperpreturb.data import (
     load_and_preprocess_perturbation_data, 
     prepare_perturbation_data
 )
-from hyperpreturb import models
+from hyperpreturb.models import HyperPerturbModel
 
 def download_file(url, output_path):
     """
@@ -140,7 +140,7 @@ def main():
     
     # Create and train the model
     logger.info("Setting up hyperbolic perturbation model...")
-    model = models.HyperbolicPerturbationModel(
+    model = HyperPerturbModel(
         n_genes=n_genes,
         n_perturbations=n_perturbations,
         embedding_dim=args.embedding_dim,
