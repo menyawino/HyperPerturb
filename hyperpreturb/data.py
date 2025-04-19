@@ -118,7 +118,7 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=50):
     
     return adata
 
-def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='control'):
+def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-targeting'):
     """Prepare perturbation data by computing fold changes compared to control.
     
     Args:
@@ -138,10 +138,10 @@ def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='contro
                 ctrl_key = key
                 print(f"Using '{ctrl_key}' as control key. Available values: {adata.obs[ctrl_key].unique()}")
                 # Try to identify control samples
-                if 'control' in adata.obs[ctrl_key].unique():
-                    ctrl_value = 'control'
-                elif 'non-targeting' in adata.obs[ctrl_key].unique():
+                if 'non-targeting' in adata.obs[ctrl_key].unique():
                     ctrl_value = 'non-targeting'
+                elif 'control' in adata.obs[ctrl_key].unique():
+                    ctrl_value = 'control'
                 break
     
     if ctrl_key not in adata.obs.columns:
