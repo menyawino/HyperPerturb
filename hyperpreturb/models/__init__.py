@@ -116,3 +116,59 @@ class HyperPerturbModel(tf.keras.Model):
         x, adj = inputs
         encoded = self.encoder((x, adj))
         return self.policy_head(encoded), self.value_head(encoded)
+
+# ----------------------------
+# Simple HyperbolicPerturbationModel
+# ----------------------------
+class HyperbolicPerturbationModel(tf.keras.Model):
+    """
+    A simple model for predicting gene expression changes in response to perturbations.
+    Uses hyperbolic embeddings to capture hierarchical structure.
+    """
+    def __init__(self, n_genes, n_perturbations, embedding_dim=32, hidden_dim=64, curvature=1.0, **kwargs):
+        super().__init__(**kwargs)
+        
+        self.n_genes = n_genes
+        self.n_perturbations = n_perturbations
+        self.embedding_dim = embedding_dim
+        self.hidden_dim = hidden_dim
+        self.curvature = curvature
+        
+        # Initialize manifold
+        self.manifold = PoincareBall(curvature=curvature)
+        
+        # Project perturbation input to hyperbolic space
+        self.pert_projection = tf.keras.layers.Dense(embedding_dim, activation='relu')
+        
+        # Hyperbolic layers
+        self.hyperbolic_layer1 = HyperbolicDense(units=hidden_dim, curvature=curvature)
+        self.hyperbolic_layer2 = HyperbolicDense(units=hidden_dim // 2, curvature=curvature)
+        
+        # Output projection layer
+        self.output_projection = tf.keras.layers.Dense(n_genes, activation='linear')
+    
+    def call(self, inputs, training=False):
+        """Forward pass."""
+        # Project perturbation inputs to hyperbolic space
+        pert_projected = self.pert_projection(inputs)
+        
+        # Normalize to ensure points are inside the Poincaré ball
+        pert_norm = tf.norm(pert_projected, axis=-1, keepdims=True)
+        max_norm = 0.999  # Keep away from the boundary
+        pert_normalized = tf.where(
+            pert_norm > max_norm,
+            pert_projected * max_norm / pert_norm,
+            pert_projected
+        )
+        
+        # Apply hyperbolic layers
+        h = self.hyperbolic_layer1(pert_normalized)
+        h = self.hyperbolic_layer2(h)
+        
+        # Project back to Euclidean space for gene expression predictions
+        log_fc_predictions = self.output_projection(h)
+        
+        return log_fc_predictions
+
+# Add to exports
+__all__ = ['HyperPerturbModel', 'HyperbolicPerturbationModel', 'HyperbolicGraphConv', 'STDPRegularizer']
