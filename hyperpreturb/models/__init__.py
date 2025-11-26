@@ -150,9 +150,9 @@ class HyperPerturbModel(tf.keras.Model):
 
         # Policy and value heads; each takes (encoded_nodes, adjacency)
         self.policy_gcn = HyperbolicGraphConv(128, curvature=curvature)
+        # Policy head output: per-gene distribution over perturbations
         self.policy_dense = tf.keras.layers.Dense(
             num_perts,
-            activity_regularizer=STDPRegularizer(),
             name="policy_output",
         )
 
