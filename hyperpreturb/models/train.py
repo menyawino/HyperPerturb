@@ -129,7 +129,7 @@ class PerturbationEnv:
 # Full Training Pipeline (Graph-based HyperPerturbModel)
 # ----------------------------
 def train_model(adata, adj_matrix=None, model_dir="models/saved", 
-                epochs=200, batch_size=128, learning_rate=3e-4,
+                epochs=200, batch_size=128, learning_rate=1e-4,
                 curvature=1.0, validation_split=0.1):
     """
     Full training pipeline for the HyperPerturb model.
@@ -234,6 +234,12 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     sum_per_gene = np.sum(per_gene_pert_reward, axis=-1, keepdims=True)
     sum_per_gene = np.where(sum_per_gene == 0.0, 1.0, sum_per_gene)  # avoid division by zero
     per_gene_pert_dist = per_gene_pert_reward / sum_per_gene  # (n_genes, n_perts)
+
+    # Label smoothing / epsilon to avoid exact zeros and ones that can
+    # destabilize KL divergence (log(0) -> -inf).
+    eps = 1e-5
+    per_gene_pert_dist = np.clip(per_gene_pert_dist, eps, 1.0)
+    per_gene_pert_dist = per_gene_pert_dist / np.sum(per_gene_pert_dist, axis=-1, keepdims=True)
 
     # Batch dimension for policy target
     graph_policy_target = per_gene_pert_dist[np.newaxis, ...]  # (1, n_genes, n_perts)
