@@ -126,17 +126,14 @@ class STDPRegularizer(tf.keras.regularizers.Regularizer):
     def __init__(self, rho=0.05, beta=1e-3):
         self.rho = rho
         self.beta = beta
-        self.spike_trace = None
         
     def __call__(self, weights):
-        if self.spike_trace is None:
-            self.spike_trace = tf.Variable(tf.zeros_like(weights), trainable=False)
-            
-        spike_penalty = self.beta * tf.reduce_sum(
-            tf.math.square(weights * self.spike_trace)
-        )
-        self.spike_trace.assign_add(tf.math.abs(weights))
-        return spike_penalty
+        """Stateless L2-style regularization on weights.
+
+        Using a stateless formulation avoids graph scope and capture issues
+        when this regularizer is used inside compiled `tf.function`s.
+        """
+        return self.beta * tf.reduce_sum(tf.square(weights))
 
 # ----------------------------
 # Core Model Architecture
