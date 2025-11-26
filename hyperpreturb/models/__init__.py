@@ -142,7 +142,7 @@ class STDPRegularizer(tf.keras.regularizers.Regularizer):
 # Core Model Architecture
 # ----------------------------
 class HyperPerturbModel(tf.keras.Model):
-    def __init__(self, num_genes, curvature=1.0, **kwargs):
+    def __init__(self, num_genes, num_perts, curvature=1.0, **kwargs):
         super().__init__(**kwargs)
         self.manifold = PoincareBall(curvature)
         # Encoder stack operating on (node_features, adjacency)
@@ -154,7 +154,7 @@ class HyperPerturbModel(tf.keras.Model):
         # Policy and value heads; each takes (encoded_nodes, adjacency)
         self.policy_gcn = HyperbolicGraphConv(128, curvature=curvature)
         self.policy_dense = tf.keras.layers.Dense(
-            num_genes,
+            num_perts,
             activity_regularizer=STDPRegularizer(),
             name="policy_output",
         )

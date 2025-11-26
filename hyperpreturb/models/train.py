@@ -249,7 +249,11 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     # ------------------------
     strategy = tf.distribute.get_strategy()
     with strategy.scope():
-        model = HyperPerturbModel(num_genes=n_genes, curvature=curvature)
+        model = HyperPerturbModel(
+            num_genes=n_genes,
+            num_perts=n_perts,
+            curvature=curvature,
+        )
 
         q_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
         model.compile(
