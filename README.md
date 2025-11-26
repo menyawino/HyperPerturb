@@ -56,9 +56,9 @@ Overall, this synergy of geometric embedding, manifold-appropriate optimization,
 
 HyperPerturb supports various single-cell RNA-seq and perturbation datasets:
 
-1. Download preprocessed datasets:
+1. Download STRING network and test datasets:
    ```bash
-   bash scripts/download_string.sh
+   bash scripts/download_string_and_test_data.sh
    ```
 
 2. Preprocess your own data:
