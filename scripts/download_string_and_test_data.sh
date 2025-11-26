@@ -2,8 +2,7 @@
 # Script to download STRING network and FrangiehIzar2021 test datasets for HyperPerturb
 #
 # This script will:
-#   - Download and unpack STRING v11.5 protein-protein interaction network for human (9606)
-#   - Download STRING protein info file for mapping protein IDs to gene names
+#   - Download and unpack STRING v12.0 protein-protein interaction network (all species)
 #   - Download FrangiehIzar2021 protein and RNA perturbation datasets (h5ad) from Figshare
 #
 # All files are placed under data/raw/ and can be used directly
@@ -16,7 +15,7 @@ mkdir -p data/processed
 # Download STRING network data (v12.0, all species, lighter file)
 echo "Downloading STRING protein-protein interaction network data (v12.0)..."
 wget -nc -O "data/raw/protein.links.v12.0.txt.gz" \
-    "https://stringdb-static.org/download/protein.links.v12.0.txt.gz"
+    "https://stringdb-downloads.org/download/protein.links.v12.0.txt.gz"
 
 # Uncompress the file
 echo "Uncompressing network data..."
@@ -61,8 +60,8 @@ from hyperpreturb.utils.data_loader import load_protein_network, create_adjacenc
 
 # Load network with high confidence (score > 700)
 network_df = load_protein_network(
-    string_path="data/raw/9606.protein.links.full.v11.5.txt",
-    gene_mapping_path="data/raw/9606.protein.info.v11.5.txt",
+    string_path="data/raw/protein.links.v12.0.txt",
+    gene_mapping_path=None,
     confidence=700
 )
 

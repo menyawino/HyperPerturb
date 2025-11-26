@@ -79,8 +79,8 @@ from hyperpreturb import load_and_preprocess_perturbation_data, train_model
 
 # Load data
 adata, adj_matrix = load_and_preprocess_perturbation_data(
-    "data/raw/FrangiehIzar2021_RNA.h5ad",
-    network_path="data/raw/9606.protein.links.full.v11.5.txt"
+   "data/raw/FrangiehIzar2021_RNA.h5ad",
+   network_path="data/raw/protein.links.v12.0.txt"
 )
 
 # Train model

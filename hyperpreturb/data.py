@@ -65,7 +65,7 @@ def download_string_network(species_id=9606, output_dir="data/raw"):
     
     return output_path
 
-def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=50):
+def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_cells=50000):
     """Preprocess raw data and optionally save the processed version.
     
     Args:
@@ -85,6 +85,11 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=50):
     else:
         # Assume input_path is already an AnnData object
         adata = input_path
+
+    # Subsample cells to reduce memory footprint if necessary
+    if max_cells is not None and adata.n_obs > max_cells:
+        adata = adata[adata.obs_names[:max_cells]].copy()
+        print(f"Subsampled to {adata.n_obs} cells for memory constraints.")
     
     # Basic preprocessing
     sc.pp.filter_cells(adata, min_genes=200)
@@ -94,21 +99,20 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=50):
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
     
-    # Find highly variable genes
-    sc.pp.highly_variable_genes(adata, n_top_genes=2000)
+    # Find highly variable genes (reduced number for memory efficiency)
+    sc.pp.highly_variable_genes(adata, n_top_genes=1000)
     adata = adata[:, adata.var.highly_variable]
     
-    # Scale data
-    sc.pp.scale(adata)
+    # Scale data (can be memory intensive; operates on subsampled data)
+    sc.pp.scale(adata, max_value=10)
     
-    # Run PCA
+    # Run PCA with fewer components
     sc.tl.pca(adata, svd_solver='arpack', n_comps=n_pcs)
     
     # Compute neighborhood graph
     sc.pp.neighbors(adata, n_neighbors=n_neighbors, n_pcs=n_pcs)
     
-    # Run UMAP for visualization
-    sc.tl.umap(adata)
+    # UMAP is primarily for visualization and can be expensive; skip by default
     
     if output_path:
         # Create directory if it doesn't exist

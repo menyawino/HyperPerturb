@@ -34,7 +34,7 @@ def load_data(path, normalize=True, log_transform=True, highly_variable=3000):
     
     return adata
 
-def load_protein_network(string_path="../data/raw/9606.protein.links.full.v12.0.txt", 
+def load_protein_network(string_path="data/raw/protein.links.v12.0.txt", 
                          gene_mapping_path=None,
                          confidence=700):
     """
