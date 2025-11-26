@@ -126,55 +126,7 @@ class PerturbationEnv:
         logger.info(f"Environment complexity increased to {self.complexity}")
 
 # ----------------------------
-# Distributed Training Strategy
-# ----------------------------
-def create_training_strategy(num_genes, curvature=1.0):
-    """
-    Create distributed training strategy and XLA-optimized training step.
-    
-    Args:
-        num_genes: Number of genes in the model
-        curvature: Curvature of hyperbolic space. Default: 1.0
-        
-    Returns:
-        Tuple of (strategy, model, optimizer, train_step)
-    """
-    # Check available devices for distribution
-    gpus = tf.config.list_physical_devices('GPU')
-    if len(gpus) > 1:
-        strategy = tf.distribute.MirroredStrategy()
-        logger.info(f"Using MirroredStrategy with {len(gpus)} GPUs")
-    else:
-        strategy = tf.distribute.get_strategy()  # Default strategy
-        logger.info("Using default strategy")
-    
-    # Initialize model, optimizer, and environment within strategy scope
-    with strategy.scope():
-        model = HyperPerturbModel(num_genes, curvature)
-        manifold = PoincareBall(curvature)
-        optimizer = HyperbolicAdam(manifold=manifold, learning_rate=3e-4)
-    
-    # XLA-optimized training step
-    @tf.function(jit_compile=True)
-    def train_step(inputs):
-        """Optimized training step with gradient tape."""
-        with tf.GradientTape(persistent=True) as tape:
-            states, actions, returns = inputs
-            logits, values = model((states, tf.sparse.eye(num_genes)))  # Use identity matrix if no specific adjacency
-            
-            advantage = returns - values
-            policy_loss = -tf.reduce_mean(actions * tf.nn.log_softmax(logits) * advantage)
-            value_loss = tf.reduce_mean(tf.square(advantage))
-            total_loss = policy_loss + 0.5 * value_loss
-            
-        gradients = tape.gradient(total_loss, model.trainable_variables)
-        optimizer.apply_gradients(zip(gradients, model.trainable_variables))
-        return total_loss
-    
-    return strategy, model, optimizer, train_step
-
-# ----------------------------
-# Full Training Pipeline
+# Full Training Pipeline (Graph-based HyperPerturbModel)
 # ----------------------------
 def train_model(adata, adj_matrix=None, model_dir="models/saved", 
                 epochs=200, batch_size=128, learning_rate=3e-4,
@@ -213,47 +165,103 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     with open(os.path.join(model_path, "config.json"), "w") as f:
         json.dump(config, f, indent=2)
     
-    # Set up environment and curriculum learning
+    # Set up environment and curriculum learning (defines perturbation labels per cell)
     env = PerturbationEnv(adata)
     curriculum = ComplexityScheduler(env)
-    
-    # Create training strategy and model
-    strategy, model, _, _ = create_training_strategy(adata.n_vars, curvature)
-    
-    # Prepare data
+
+    # ------------------------
+    # Build graph inputs
+    # Nodes = genes, adjacency = gene-gene graph
+    # ------------------------
+    n_genes = adata.n_vars
+
     if adj_matrix is None:
-        # Create identity adjacency matrix if none provided
-        adj_matrix = tf.sparse.eye(adata.n_vars, adata.n_vars)
-    
-    # Convert sparse X to dense if needed
-    if hasattr(adata.X, 'toarray'):
-        X = adata.X.toarray()
+        # Identity adjacency if none provided
+        adj_matrix = tf.sparse.eye(n_genes, n_genes)
+
+    # Expression matrix: cells × genes
+    if hasattr(adata.X, "toarray"):
+        X_dense = adata.X.toarray().astype("float32")
     else:
-        X = adata.X
-    
-    # Set up quantum annealing schedule
-    q_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
-    
-    # Compile model with custom optimizer
+        X_dense = np.asarray(adata.X, dtype="float32")
+
+    # Per-gene features via mean expression over cells
+    # Result shape: (1, n_genes, 1) -> batch=1, feature_dim=1
+    gene_features = np.mean(X_dense, axis=0, keepdims=True)  # (1, n_genes)
+    gene_features = gene_features[..., np.newaxis].astype("float32")  # (1, n_genes, 1)
+
+    # ------------------------
+    # Graph-level targets: per-gene × per-perturbation rewards (Option 2)
+    # ------------------------
+    # env.targets: (n_cells, n_perts) one-hot or similar
+    targets = env.targets
+    if hasattr(targets, "toarray"):
+        targets = targets.toarray()
+    targets = np.asarray(targets, dtype="float32")  # (n_cells, n_perts)
+
+    # log fold-change: (n_cells, n_genes)
+    if "log_fold_change" not in adata.obsm:
+        raise ValueError("Expected 'log_fold_change' in adata.obsm for per-gene rewards.")
+
+    lfc = adata.obsm["log_fold_change"]
+    if hasattr(lfc, "toarray"):
+        lfc = lfc.toarray()
+    lfc = np.asarray(lfc, dtype="float32")  # (n_cells, n_genes)
+
+    n_cells, n_perts = targets.shape
+    _, n_genes_check = lfc.shape
+    if n_genes_check != n_genes:
+        raise ValueError(f"Mismatch between n_genes from adata.n_vars ({n_genes}) and log_fold_change second dim ({n_genes_check}).")
+
+    # Compute per-perturbation × per-gene reward as mean |lfc| over cells with that perturbation
+    per_pert_gene_reward = np.zeros((n_perts, n_genes), dtype="float32")
+    for p in range(n_perts):
+        mask = targets[:, p] > 0.5
+        if np.any(mask):
+            per_pert_gene_reward[p] = np.mean(np.abs(lfc[mask]), axis=0)
+        else:
+            per_pert_gene_reward[p] = 0.0
+
+    # Transpose to (n_genes, n_perts)
+    per_gene_pert_reward = per_pert_gene_reward.T  # (n_genes, n_perts)
+
+    # Normalize per gene across perturbations to form probability distributions
+    sum_per_gene = np.sum(per_gene_pert_reward, axis=-1, keepdims=True)
+    sum_per_gene = np.where(sum_per_gene == 0.0, 1.0, sum_per_gene)  # avoid division by zero
+    per_gene_pert_dist = per_gene_pert_reward / sum_per_gene  # (n_genes, n_perts)
+
+    # Batch dimension for policy target
+    graph_policy_target = per_gene_pert_dist[np.newaxis, ...]  # (1, n_genes, n_perts)
+
+    # Per-gene scalar value target: mean (unnormalized) reward over perturbations
+    per_gene_value = np.mean(per_gene_pert_reward, axis=-1, keepdims=True)  # (n_genes, 1)
+    graph_value_target = per_gene_value[np.newaxis, ...]  # (1, n_genes, 1)
+
+    y_targets = [graph_policy_target, graph_value_target]
+
+    # ------------------------
+    # Build HyperPerturbModel on this graph
+    # ------------------------
+    strategy = tf.distribute.get_strategy()
     with strategy.scope():
+        model = HyperPerturbModel(num_genes=n_genes, curvature=curvature)
+
+        q_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
         model.compile(
             optimizer=HyperbolicAdam(
                 learning_rate=q_schedule,
                 manifold=PoincareBall(curvature)
             ),
+            # Policy head: predict per-gene distribution over perturbations
             loss=[
-                tf.keras.losses.CategoricalCrossentropy(from_logits=True),
-                tf.keras.losses.MeanSquaredError()
+                tf.keras.losses.KLDivergence(name="policy_kld"),
+                tf.keras.losses.MeanSquaredError(name="value_mse"),
             ],
-            metrics={
-                'policy': [
-                    tf.keras.metrics.TopKCategoricalAccuracy(k=1, name='top1'),
-                    tf.keras.metrics.TopKCategoricalAccuracy(k=5, name='top5')
-                ],
-                'value': [
-                    tf.keras.metrics.MeanAbsoluteError(name='mae')
-                ]
-            }
+            loss_weights=[1.0, 0.5],
+            metrics=[
+                tf.keras.metrics.MeanAbsoluteError(name="policy_mae"),
+                tf.keras.metrics.MeanAbsoluteError(name="value_mae"),
+            ],
         )
     
     # Set up callbacks
@@ -285,13 +293,13 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     # Train model
     logger.info(f"Starting training for {epochs} epochs with batch size {batch_size}")
     history = model.fit(
-        x=(X, adj_matrix),
-        y=env.targets,
+        x=(gene_features, adj_matrix),
+        y=y_targets,
         epochs=epochs,
-        batch_size=batch_size,
-        validation_split=validation_split,
+        batch_size=1,  # graph-level batch
+        validation_split=0.0,  # single graph, use callbacks only
         callbacks=callbacks,
-        verbose=1
+        verbose=1,
     )
     
     # Save final model in Keras format

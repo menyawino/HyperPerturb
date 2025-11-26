@@ -94,28 +94,49 @@ class HyperPerturbModel(tf.keras.Model):
     def __init__(self, num_genes, curvature=1.0, **kwargs):
         super().__init__(**kwargs)
         self.manifold = PoincareBall(curvature)
-        self.encoder = tf.keras.Sequential([
-            HyperbolicGraphConv(512, curvature=curvature),
-            tf.keras.layers.LayerNormalization(),
-            HyperbolicGraphConv(256, curvature=curvature),
-            tf.keras.layers.Dropout(0.3)
-        ])
-        
-        self.policy_head = tf.keras.Sequential([
-            HyperbolicGraphConv(128, curvature=curvature),
-            tf.keras.layers.Dense(num_genes, activity_regularizer=STDPRegularizer())
-        ], name='policy')
-        
-        self.value_head = tf.keras.Sequential([
-            HyperbolicGraphConv(128, curvature=curvature),
-            tf.keras.layers.Dense(1)
-        ], name='value')
-        
+        # Encoder stack operating on (node_features, adjacency)
+        self.encoder_gcn1 = HyperbolicGraphConv(512, curvature=curvature)
+        self.encoder_norm = tf.keras.layers.LayerNormalization()
+        self.encoder_gcn2 = HyperbolicGraphConv(256, curvature=curvature)
+        self.encoder_dropout = tf.keras.layers.Dropout(0.3)
+
+        # Policy and value heads; each takes (encoded_nodes, adjacency)
+        self.policy_gcn = HyperbolicGraphConv(128, curvature=curvature)
+        self.policy_dense = tf.keras.layers.Dense(
+            num_genes,
+            activity_regularizer=STDPRegularizer(),
+            name="policy_output",
+        )
+
+        self.value_gcn = HyperbolicGraphConv(128, curvature=curvature)
+        self.value_dense = tf.keras.layers.Dense(1, name="value_output")
+
     @tf.function(jit_compile=True)
-    def call(self, inputs):
+    def call(self, inputs, training=False):
+        """Forward pass.
+
+        Args:
+            inputs: Tuple ``(x, adj)`` where ``x`` has shape
+                ``(batch, n_nodes, d)`` and ``adj`` is a (possibly
+                sparse) adjacency matrix of shape ``(n_nodes, n_nodes)``.
+        """
         x, adj = inputs
-        encoded = self.encoder((x, adj))
-        return self.policy_head(encoded), self.value_head(encoded)
+
+        # Encoder
+        h = self.encoder_gcn1((x, adj))
+        h = self.encoder_norm(h)
+        h = self.encoder_gcn2((h, adj))
+        h = self.encoder_dropout(h, training=training)
+
+        # Policy head
+        policy_h = self.policy_gcn((h, adj))
+        policy_logits = self.policy_dense(policy_h)
+
+        # Value head
+        value_h = self.value_gcn((h, adj))
+        value = self.value_dense(value_h)
+
+        return policy_logits, value
 
 # ----------------------------
 # Simple HyperbolicPerturbationModel
