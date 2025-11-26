@@ -65,7 +65,7 @@ def download_string_network(species_id=9606, output_dir="data/raw"):
     
     return output_path
 
-def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_cells=50000):
+def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_cells=3000):
     """Preprocess raw data and optionally save the processed version.
     
     Args:
@@ -86,10 +86,11 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_
         # Assume input_path is already an AnnData object
         adata = input_path
 
-    # Subsample cells to reduce memory footprint if necessary
+    # Subsample cells to reduce memory footprint if necessary.
+    # With 10GB RAM, we keep at most `max_cells` (default 3000).
     if max_cells is not None and adata.n_obs > max_cells:
         adata = adata[adata.obs_names[:max_cells]].copy()
-        print(f"Subsampled to {adata.n_obs} cells for memory constraints.")
+        print(f"Subsampled to {adata.n_obs} cells for memory constraints (10GB-safe cap).")
     
     # Basic preprocessing
     sc.pp.filter_cells(adata, min_genes=200)
