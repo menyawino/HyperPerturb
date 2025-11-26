@@ -195,6 +195,20 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     gene_features = np.mean(X_dense, axis=0, keepdims=False).astype("float32")  # (n_genes,)
     gene_features = gene_features[:, np.newaxis]  # (n_genes, 1)
 
+    # Sanity logging for inputs
+    logger.info(
+        "Gene features stats - min: %.4f, max: %.4f, mean: %.4f",
+        float(gene_features.min()),
+        float(gene_features.max()),
+        float(gene_features.mean()),
+    )
+    logger.info(
+        "Adjacency stats - min: %.4f, max: %.4f, mean: %.4f",
+        float(tf.reduce_min(adj_matrix).numpy()),
+        float(tf.reduce_max(adj_matrix).numpy()),
+        float(tf.reduce_mean(adj_matrix).numpy()),
+    )
+
     # ------------------------
     # Graph-level targets: per-gene × per-perturbation rewards (Option 2)
     # ------------------------
@@ -240,6 +254,20 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     eps = 1e-5
     per_gene_pert_dist = np.clip(per_gene_pert_dist, eps, 1.0)
     per_gene_pert_dist = per_gene_pert_dist / np.sum(per_gene_pert_dist, axis=-1, keepdims=True)
+
+    # Sanity logging for targets
+    logger.info(
+        "Policy target stats - min: %.6f, max: %.6f, mean: %.6f",
+        float(per_gene_pert_dist.min()),
+        float(per_gene_pert_dist.max()),
+        float(per_gene_pert_dist.mean()),
+    )
+    logger.info(
+        "Value target stats - min: %.6f, max: %.6f, mean: %.6f",
+        float(per_gene_value.min()),
+        float(per_gene_value.max()),
+        float(per_gene_value.mean()),
+    )
 
     # Batch dimension for policy target
     graph_policy_target = per_gene_pert_dist[np.newaxis, ...]  # (1, n_genes, n_perts)
