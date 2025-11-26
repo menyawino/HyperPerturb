@@ -265,7 +265,7 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             update_freq=100
         ),
         tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(model_path, 'checkpoints/model_{epoch:02d}'),
+            filepath=os.path.join(model_path, 'checkpoints', 'model_{epoch:02d}.keras'),
             save_best_only=True,
             monitor='val_loss'
         ),
@@ -294,8 +294,9 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         verbose=1
     )
     
-    # Save final model
-    model.save(os.path.join(model_path, 'final_model'))
-    logger.info(f"Model saved to {os.path.join(model_path, 'final_model')}")
+    # Save final model in Keras format
+    final_path = os.path.join(model_path, 'final_model.keras')
+    model.save(final_path)
+    logger.info(f"Model saved to {final_path}")
     
     return model, history
