@@ -177,14 +177,12 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
 
     if adj_matrix is None:
         # Identity adjacency if none provided
-        adj_matrix = tf.sparse.eye(n_genes, n_genes)
-
-    # Ensure adjacency has an explicit batch dimension so Keras
-    # sees a consistent batch size across all inputs.
-    if isinstance(adj_matrix, tf.SparseTensor):
-        adj_matrix = tf.sparse.expand_dims(adj_matrix, axis=0)  # (1, n_genes, n_genes)
+        adj_matrix = tf.eye(n_genes, n_genes, dtype=tf.float32)
     else:
-        adj_matrix = tf.expand_dims(adj_matrix, axis=0)  # (1, n_genes, n_genes)
+        # Ensure dense float32 (no extra batch dim)
+        if isinstance(adj_matrix, tf.SparseTensor):
+            adj_matrix = tf.sparse.to_dense(adj_matrix)
+        adj_matrix = tf.cast(adj_matrix, tf.float32)
 
     # Expression matrix: cells × genes
     if hasattr(adata.X, "toarray"):
@@ -193,9 +191,9 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         X_dense = np.asarray(adata.X, dtype="float32")
 
     # Per-gene features via mean expression over cells
-    # Result shape: (1, n_genes, 1) -> batch=1, feature_dim=1
-    gene_features = np.mean(X_dense, axis=0, keepdims=True)  # (1, n_genes)
-    gene_features = gene_features[..., np.newaxis].astype("float32")  # (1, n_genes, 1)
+    # Result shape: (n_genes, 1); batch dimension will be handled by Keras
+    gene_features = np.mean(X_dense, axis=0, keepdims=False).astype("float32")  # (n_genes,)
+    gene_features = gene_features[:, np.newaxis]  # (n_genes, 1)
 
     # ------------------------
     # Graph-level targets: per-gene × per-perturbation rewards (Option 2)
@@ -270,7 +268,15 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
                 tf.keras.metrics.MeanAbsoluteError(name="value_mae"),
             ],
         )
-    
+
+        # Explicitly build model with expected input shapes: (batch, n_genes, feat_dim) and (batch, n_genes, n_genes)
+        model.build(
+            input_shape=[
+                (None, n_genes, 1),        # gene_features
+                (None, n_genes, n_genes),  # adj_matrix
+            ]
+        )
+
     # Set up callbacks
     callbacks = [
         curriculum,
@@ -297,10 +303,13 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         )
     ]
     
-    # Train model
+    # Prepare inputs with batch dimension = 1
+    x_gene = gene_features[np.newaxis, ...]          # (1, n_genes, 1)
+    x_adj = adj_matrix[np.newaxis, ...]             # (1, n_genes, n_genes)
+
     logger.info(f"Starting training for {epochs} epochs with batch size {batch_size}")
     history = model.fit(
-        x=(gene_features, adj_matrix),
+        x=[x_gene, x_adj],
         y=y_targets,
         epochs=epochs,
         batch_size=1,  # graph-level batch
