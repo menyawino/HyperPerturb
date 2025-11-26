@@ -54,43 +54,156 @@ Overall, this synergy of geometric embedding, manifold-appropriate optimization,
 
 ## Data Preparation
 
-HyperPerturb supports various single-cell RNA-seq and perturbation datasets:
+HyperPerturb supports various single-cell RNA-seq and perturbation datasets. The reference
+setup in this repository assumes the Frangieh & Izar (2021) CRISPR perturbation dataset
+in `AnnData` (`.h5ad`) format.
 
-1. Download STRING network and test datasets:
-   ```bash
-   bash scripts/download_string_and_test_data.sh
-   ```
+### 1. Download reference data and STRING network
 
-2. Preprocess your own data:
-   ```python
-   from hyperpreturb import preprocess_data
-   
-   # Load and preprocess data
-   adata = preprocess_data("path/to/your/data.h5ad", 
-                          output_path="data/processed/your_processed_data.h5ad")
-   ```
+This script downloads the RNA, protein, and STRING network files into `data/raw`:
+
+```bash
+bash scripts/download_string_and_test_data.sh
+```
+
+After running it, you should have at least:
+
+- `data/raw/FrangiehIzar2021_RNA.h5ad`
+- `data/raw/FrangiehIzar2021_protein.h5ad`
+- a STRING network text file (e.g. `9606.protein.links.full.v11.5.txt`)
+
+### 2. Expected metadata / control labels
+
+The preprocessing pipeline automatically detects control samples based on columns in
+`adata.obs`:
+
+- Primary control key: `perturbation`
+- Fallback keys (if needed): `perturbation_type`, `perturbation_2`
+
+The control label is chosen in this order:
+
+1. Use `"non-targeting"` if present in the chosen column.
+2. Otherwise use `"control"` if present (this matches the Frangieh & Izar data).
+
+You can inspect the available labels with the helper script:
+
+```bash
+chmod +x scripts/inspect_labels.sh
+./scripts/inspect_labels.sh
+```
+
+This will print all columns in `obs` and sample values from `perturbation`,
+`perturbation_type`, and `perturbation_2` so you can confirm that the control label
+is detected correctly.
+
+### 3. Preprocessing and memory expectations (~10 GB RAM)
+
+For users on machines with around **10 GB of system RAM**, the default preprocessing
+and training configuration is tuned to avoid out-of-memory errors:
+
+- In `hyperpreturb/data.py`, `preprocess_data` subsamples to at most **3000 cells**
+  (`max_cells=3000`).
+- Highly variable genes are limited to 1000, and PCA is run on this subset.
+- This keeps the dense matrices used by Scanpy within a safe memory budget.
+
+If you have more RAM and want to use more cells, you can increase `max_cells` in
+`preprocess_data` or override it when calling custom preprocessing functions, but for
+10 GB we recommend keeping the default.
+
+### 4. Using the built-in preprocessing pipeline
+
+The main training script `scripts/train_model.py` uses the helper
+`load_and_preprocess_perturbation_data` from `hyperpreturb.data`. If you want to
+preprocess your own dataset, follow a similar pattern:
+
+```python
+from hyperpreturb.data import preprocess_data, prepare_perturbation_data
+
+# Basic preprocessing with a 10 GB-friendly cell cap
+adata = preprocess_data(
+    "path/to/your/data.h5ad",
+    output_path="data/processed/your_processed_data.h5ad",
+    max_cells=3000,
+)
+
+# Add perturbation targets and log-fold changes relative to control samples
+adata = prepare_perturbation_data(adata)
+```
 
 ## Model Training
 
-Train the HyperPerturb model with customizable parameters:
+There are two main training entry points:
+
+1. A **command-line script** (`scripts/train_model.py`) that handles data loading,
+    preprocessing, and training end-to-end.
+2. The lower-level **Python API** in `hyperpreturb.models.train` for custom workflows.
+
+### 1. Command-line training script (recommended)
+
+The script `scripts/train_model.py` is configured with defaults that work on a
+machine with ~10 GB of RAM. It:
+
+- Loads `data/raw/FrangiehIzar2021_RNA.h5ad` (and optional protein data) by default.
+- Subsamples to at most 3000 cells for memory safety.
+- Detects control samples from `adata.obs['perturbation']` (using `"control"` unless
+   `"non-targeting"` is present).
+- Trains the HyperPerturb model using the **advanced** hyperbolic trainer by default.
+
+From the repository root:
+
+```bash
+python scripts/train_model.py
+```
+
+Key CLI options (all have 10 GB-friendly defaults):
+
+- `--rna_path`: Path to RNA `.h5ad` file (default: `data/raw/FrangiehIzar2021_RNA.h5ad`).
+- `--protein_path`: Optional protein `.h5ad` file.
+- `--network_path`: Optional STRING network file.
+- `--output_dir`: Directory to save models and logs.
+- `--trainer`: `advanced` (default) or `simple`.
+- `--epochs`: Default `30`.
+- `--batch_size`: Default `16`.
+- `--embedding_dim`: Default `16`.
+- `--hidden_dim`: Default `32`.
+- `--max_cells`: Default `3000` (preprocessing cell cap).
+
+Example of a conservative run on a 10 GB machine:
+
+```bash
+python scripts/train_model.py \
+   --trainer advanced \
+   --epochs 30 \
+   --batch_size 16 \
+   --max_cells 3000
+```
+
+If you have more memory available, you can gradually increase `--max_cells` or
+`--batch_size`. If you encounter an out-of-memory kill from the OS, reduce these
+values again.
+
+### 2. Python API example
+
+For more control, you can call the training API directly:
 
 ```python
-from hyperpreturb import load_and_preprocess_perturbation_data, train_model
+from hyperpreturb.data import load_and_preprocess_perturbation_data
+from hyperpreturb.models.train import train_model
 
-# Load data
+# Load and preprocess data with built-in defaults (including max_cells=3000)
 adata, adj_matrix = load_and_preprocess_perturbation_data(
-   "data/raw/FrangiehIzar2021_RNA.h5ad",
-   network_path="data/raw/protein.links.v12.0.txt"
+      "data/raw/FrangiehIzar2021_RNA.h5ad",
+      network_path="data/raw/protein.links.full.v11.5.txt",  # adjust filename as needed
 )
 
-# Train model
+# Train HyperPerturb model (advanced trainer)
 model, history = train_model(
-    adata,
-    adj_matrix=adj_matrix,
-    epochs=200,
-    batch_size=128,
-    learning_rate=3e-4,
-    curvature=1.0
+      adata,
+      adj_matrix=adj_matrix,
+      epochs=30,
+      batch_size=16,
+      learning_rate=3e-4,
+      curvature=1.0,
 )
 ```
 

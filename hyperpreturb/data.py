@@ -134,24 +134,24 @@ def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-ta
     Returns:
         AnnData object with added perturbation effects
     """
-    # First check if the control key exists in the data
+    # Select control column and label based on available metadata
     if ctrl_key not in adata.obs.columns:
-        # Try to find alternative control columns
         potential_keys = ['perturbation', 'perturbation_type', 'perturbation_2']
         for key in potential_keys:
             if key in adata.obs.columns:
                 ctrl_key = key
-                print(f"Using '{ctrl_key}' as control key. Available values: {adata.obs[ctrl_key].unique()}")
-                # Try to identify control samples
-                if 'non-targeting' in adata.obs[ctrl_key].unique():
-                    ctrl_value = 'non-targeting'
-                elif 'control' in adata.obs[ctrl_key].unique():
-                    ctrl_value = 'control'
                 break
-    
+
     if ctrl_key not in adata.obs.columns:
         raise ValueError(f"Could not find control key in data. Available columns: {list(adata.obs.columns)}")
-    
+
+    available = adata.obs[ctrl_key].unique()
+    # Prefer 'non-targeting' if present; otherwise fall back to 'control'
+    if 'non-targeting' in available:
+        ctrl_value = 'non-targeting'
+    elif 'control' in available:
+        ctrl_value = 'control'
+
     print(f"Using '{ctrl_key}' column with control value '{ctrl_value}'")
     
     # Split data into control and perturbation groups
