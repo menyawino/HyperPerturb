@@ -34,19 +34,29 @@ class HaarMeasureInitializer(tf.keras.initializers.Initializer):
         self.epsilon = epsilon
         
     def __call__(self, shape, dtype=None):
-        # Ensure ``dtype`` is a valid TensorFlow dtype (not a Python tuple)
+        """Simple, robust weight initializer.
+
+        Uses a normalized Gaussian initializer that is compatible with a wide
+        range of TensorFlow versions and avoids advanced linear algebra ops
+        that may be missing on some builds.
+        """
+        # Ensure ``dtype`` is a valid TensorFlow dtype
         if dtype is None:
             dtype = tf.float32
         dtype = tf.as_dtype(dtype)
 
-        q = tf.linalg.exp(
-            tfp.math.random_rademacher(shape, dtype=tf.complex64)
-        )
-        base = tf.math.real(q)
-        noise = self.epsilon * tf.random.normal(shape, dtype=dtype)
-        # Cast base to match requested dtype
-        base = tf.cast(base, dtype)
-        return base + noise
+        # Base Gaussian weights
+        w = tf.random.normal(shape, mean=0.0, stddev=1.0, dtype=dtype)
+
+        # Optional small perturbation noise for numerical diversity
+        if self.epsilon > 0:
+            w += self.epsilon * tf.random.normal(shape, dtype=dtype)
+
+        # L2-normalize over input dimension to keep scales reasonable
+        if len(shape) > 0:
+            w = tf.math.l2_normalize(w, axis=0)
+
+        return w
 
 # ----------------------------
 # Hierarchical Graph Convolution
