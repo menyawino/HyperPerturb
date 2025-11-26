@@ -49,24 +49,55 @@ class HyperbolicGraphConv(tf.keras.layers.Layer):
         self.manifold = PoincareBall(curvature)
         
     def build(self, input_shape):
+        """Build layer weights.
+
+        ``input_shape`` can be either a tuple ``(node_shape, adj_shape)`` or a
+        single tensor shape when Keras traces the layer. We only need the
+        feature dimension of the node representation.
+        """
+        # If we receive a tuple/list, take the node feature shape
+        if isinstance(input_shape, (list, tuple)):
+            node_shape = tf.TensorShape(input_shape[0])
+        else:
+            node_shape = tf.TensorShape(input_shape)
+
+        feature_dim = int(node_shape[-1])
+
         self.kernel = self.add_weight(
-            shape=(input_shape[-1], self.units),
+            name="kernel",
+            shape=(feature_dim, self.units),
             initializer=HaarMeasureInitializer(),
-            trainable=True
+            trainable=True,
+            dtype=self.dtype,
         )
         self.bias = self.add_weight(
+            name="bias",
             shape=(self.units,),
-            initializer='zeros',
-            trainable=True
+            initializer="zeros",
+            trainable=True,
+            dtype=self.dtype,
         )
         
     @tf.function(jit_compile=True)
     def call(self, inputs):
+        # ``inputs`` is expected to be (x, adj)
         x, adj = inputs
+
+        # Map node features to hyperbolic space
         x_proj = poincare_expmap(x, self.curvature)
-        support = tf.sparse.sparse_dense_matmul(adj, x_proj)
+
+        # Dense or sparse adjacency support
+        if isinstance(adj, tf.SparseTensor):
+            support = tf.sparse.sparse_dense_matmul(adj, x_proj)
+        else:
+            support = tf.linalg.matmul(adj, x_proj)
+
+        # Map back to tangent space
         output = poincare_logmap(support, self.curvature)
-        return output + self.bias
+
+        # Linear projection with bias
+        output = tf.linalg.matmul(output, self.kernel) + self.bias
+        return output
 
 # ----------------------------
 # Neuromorphic Regularization
