@@ -10,16 +10,18 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 
 # ----------------------------
-# Hyperbolic Operations (XLA-optimized)
+# Hyperbolic Operations
 # ----------------------------
-@tf.function(jit_compile=True)
 def poincare_expmap(v, c=1.0):
+    # Clip norms to avoid extremely large arguments to tanh
     norm_v = tf.norm(v, axis=-1, keepdims=True)
+    norm_v = tf.clip_by_value(norm_v, 0.0, 10.0)
     return tf.math.tanh(tf.sqrt(c) * norm_v) * v / (tf.sqrt(c) * norm_v + 1e-8)
 
-@tf.function(jit_compile=True)
 def poincare_logmap(y, c=1.0):
+    # Clip norms to keep arguments to atanh in a safe range
     norm_y = tf.norm(y, axis=-1, keepdims=True)
+    norm_y = tf.clip_by_value(norm_y, 0.0, 0.999)
     return tf.math.atanh(tf.sqrt(c) * norm_y) * y / (tf.sqrt(c) * norm_y + 1e-8)
 
 @tf.function(jit_compile=True)
@@ -98,7 +100,6 @@ class HyperbolicGraphConv(tf.keras.layers.Layer):
             dtype=self.dtype,
         )
         
-    @tf.function(jit_compile=True)
     def call(self, inputs):
         # ``inputs`` is expected to be (x, adj)
         x, adj = inputs
@@ -159,7 +160,6 @@ class HyperPerturbModel(tf.keras.Model):
         self.value_gcn = HyperbolicGraphConv(128, curvature=curvature)
         self.value_dense = tf.keras.layers.Dense(1, name="value_output")
 
-    @tf.function(jit_compile=True)
     def call(self, inputs, training=False):
         """Forward pass.
 

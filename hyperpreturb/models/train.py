@@ -299,7 +299,7 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             ),
             # Policy head: predict per-gene distribution over perturbations
             loss=[
-                tf.keras.losses.KLDivergence(name="policy_kld"),
+                tf.keras.losses.KLDivergence(from_logits=True, name="policy_kld"),
                 tf.keras.losses.MeanSquaredError(name="value_mse"),
             ],
             loss_weights=[1.0, 0.5],
