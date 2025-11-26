@@ -34,9 +34,19 @@ class HaarMeasureInitializer(tf.keras.initializers.Initializer):
         self.epsilon = epsilon
         
     def __call__(self, shape, dtype=None):
-        n = shape[0]
-        q = tf.linalg.exp(tfp.math.random_rademacher(shape, dtype=tf.complex64))
-        return tf.math.real(q) + self.epsilon * tf.random.normal(shape, dtype=dtype)
+        # Ensure ``dtype`` is a valid TensorFlow dtype (not a Python tuple)
+        if dtype is None:
+            dtype = tf.float32
+        dtype = tf.as_dtype(dtype)
+
+        q = tf.linalg.exp(
+            tfp.math.random_rademacher(shape, dtype=tf.complex64)
+        )
+        base = tf.math.real(q)
+        noise = self.epsilon * tf.random.normal(shape, dtype=dtype)
+        # Cast base to match requested dtype
+        base = tf.cast(base, dtype)
+        return base + noise
 
 # ----------------------------
 # Hierarchical Graph Convolution
