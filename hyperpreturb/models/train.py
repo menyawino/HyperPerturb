@@ -179,6 +179,13 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         # Identity adjacency if none provided
         adj_matrix = tf.sparse.eye(n_genes, n_genes)
 
+    # Ensure adjacency has an explicit batch dimension so Keras
+    # sees a consistent batch size across all inputs.
+    if isinstance(adj_matrix, tf.SparseTensor):
+        adj_matrix = tf.sparse.expand_dims(adj_matrix, axis=0)  # (1, n_genes, n_genes)
+    else:
+        adj_matrix = tf.expand_dims(adj_matrix, axis=0)  # (1, n_genes, n_genes)
+
     # Expression matrix: cells × genes
     if hasattr(adata.X, "toarray"):
         X_dense = adata.X.toarray().astype("float32")
