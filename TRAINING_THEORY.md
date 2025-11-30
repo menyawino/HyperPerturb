@@ -13,6 +13,7 @@ This document explains the theoretical foundations and practical wiring of the H
   - `adata.var`: per-gene metadata.
   - `adata.obsm['log_fold_change']`: per-cell, per-gene log fold-change vs control.
   - `adata.obsm['perturbation_target']`: per-cell, one-hot perturbation labels (if available).
+  - `adata.obsm['protein']`: optional per-cell protein expression matrix (e.g., 24 CITE-seq channels), stored as a separate modality when protein data are available.
 
 ### 1.2 Preprocessing pipeline (`hyperpreturb/data.py`)
 
@@ -46,6 +47,7 @@ At the end of preprocessing, we have:
 
 - Cell-level perturbation labels (`perturbation_target`).
 - Per-cell, per-gene log fold-changes (`log_fold_change`).
+- Optional cell-level protein expression (`protein`) stored in `adata.obsm['protein']` when a matching protein `.h5ad` is provided.
 - Optional gene–gene adjacency matrix.
 
 These are the raw ingredients for the hyperbolic training pipeline.
@@ -225,18 +227,20 @@ optimizer = HyperbolicAdam(
 
 ```python
 model.compile(
-    optimizer=optimizer,
-    loss=[
-        tf.keras.losses.KLDivergence(name="policy_kld"),  # policy head
-        tf.keras.losses.MeanSquaredError(name="value_mse"),  # value head
-    ],
-    loss_weights=[1.0, 0.5],
-    metrics=[
-        tf.keras.metrics.MeanAbsoluteError(name="policy_mae"),
-        tf.keras.metrics.MeanAbsoluteError(name="value_mae"),
-    ],
+  optimizer=optimizer,
+  loss=[
+    safe_kl_divergence(name="policy_kld"),  # numerically-stable KL
+    tf.keras.losses.MeanSquaredError(name="value_mse"),  # value head
+  ],
+  loss_weights=[1.0, 0.5],
+  metrics=[
+    tf.keras.metrics.MeanAbsoluteError(name="policy_mae"),
+    tf.keras.metrics.MeanAbsoluteError(name="value_mae"),
+  ],
 )
 ```
+
+Here `safe_kl_divergence` is a thin wrapper around `tf.keras.losses.KLDivergence` that clips the predicted distributions to \([\varepsilon, 1]\) and renormalizes along the last axis before computing KL. This reduces the chance of numerical instabilities (e.g., `nan` from `log(0)`) when training the policy head.
 
 - **Policy head:** learns to match the normalized per-gene perturbation impact distributions.
 - **Value head:** approximates the scalar per-gene reward.
