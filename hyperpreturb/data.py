@@ -100,8 +100,10 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
     
-    # Find highly variable genes (reduced number for memory efficiency)
-    sc.pp.highly_variable_genes(adata, n_top_genes=1000)
+    # Find highly variable genes. Use a moderately larger gene set
+    # (2000 HVGs) to provide more signal for the model while keeping
+    # memory usage manageable.
+    sc.pp.highly_variable_genes(adata, n_top_genes=2000)
     adata = adata[:, adata.var.highly_variable]
     
     # Scale data (can be memory intensive; operates on subsampled data)
