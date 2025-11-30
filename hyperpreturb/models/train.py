@@ -147,7 +147,7 @@ class PerturbationEnv:
 def train_model(adata, adj_matrix=None, model_dir="models/saved", 
                 epochs=200, batch_size=128, learning_rate=1e-5,
                 curvature=1.0, validation_split=0.1,
-                debug=False):
+                debug=False, policy_only=False, euclidean_baseline=False):
     """
     Full training pipeline for the HyperPerturb model.
     
@@ -296,6 +296,7 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         float(per_gene_value.mean()),
     )
 
+    # Targets for policy and value heads
     y_targets = [graph_policy_target, graph_value_target]
 
     # ------------------------
@@ -303,11 +304,48 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     # ------------------------
     strategy = tf.distribute.get_strategy()
     with strategy.scope():
-        model = HyperPerturbModel(
-            num_genes=n_genes,
-            num_perts=n_perts,
-            curvature=curvature,
-        )
+        # Choose model architecture: hyperbolic default vs Euclidean baseline
+        if euclidean_baseline:
+            from hyperpreturb.models import EuclideanGraphConv
+
+            class EuclideanPerturbModel(HyperPerturbModel):
+                """HyperPerturbModel variant that uses EuclideanGraphConv.
+
+                This replaces all HyperbolicGraphConv layers in the encoder,
+                policy, and value paths with EuclideanGraphConv for ablation.
+                """
+
+                def __init__(self, num_genes, num_perts, curvature=1.0, **kwargs):
+                    super().__init__(num_genes, num_perts, curvature, **kwargs)
+                    # Override GCN layers with Euclidean versions
+                    self.encoder_gcn1 = EuclideanGraphConv(512)
+                    self.encoder_gcn2 = EuclideanGraphConv(256)
+                    self.policy_gcn = EuclideanGraphConv(128)
+                    self.value_gcn = EuclideanGraphConv(128)
+
+            base_model_cls = EuclideanPerturbModel
+        else:
+            base_model_cls = HyperPerturbModel
+
+        # Wrap model in a debug-aware subclass so that Keras always
+        # calls with debug=True when requested via the train_model
+        # debug flag. In normal runs, use the base model class.
+        if debug:
+            class DebugHyperPerturbModel(base_model_cls):  # type: ignore[misc]
+                def call(self, inputs, training=False, debug=False):  # type: ignore[override]
+                    return super().call(inputs, training=training, debug=True)
+
+            model = DebugHyperPerturbModel(
+                num_genes=n_genes,
+                num_perts=n_perts,
+                curvature=curvature,
+            )
+        else:
+            model = base_model_cls(
+                num_genes=n_genes,
+                num_perts=n_perts,
+                curvature=curvature,
+            )
 
         # Optimizer:
         # - debug mode: plain Adam with constant small LR (no manifold)
@@ -320,18 +358,32 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
                 learning_rate=q_schedule,
                 manifold=PoincareBall(curvature),
             )
-        model.compile(
-            optimizer=optimizer,
-            # Policy head: predict per-gene distribution over perturbations
-            loss=[
+
+        # Loss configuration:
+        # - policy_only: only policy KL + policy metrics
+        # - default: joint policy KL + value MSE losses
+        if policy_only:
+            loss = [safe_kl_divergence(name="policy_kld")]
+            loss_weights = None
+            metrics = [tf.keras.metrics.MeanAbsoluteError(name="policy_mae")]
+            y_used = [graph_policy_target]
+        else:
+            loss = [
                 safe_kl_divergence(name="policy_kld"),
                 tf.keras.losses.MeanSquaredError(name="value_mse"),
-            ],
-            loss_weights=[1.0, 0.5],
-            metrics=[
+            ]
+            loss_weights = [1.0, 0.5]
+            metrics = [
                 tf.keras.metrics.MeanAbsoluteError(name="policy_mae"),
                 tf.keras.metrics.MeanAbsoluteError(name="value_mae"),
-            ],
+            ]
+            y_used = y_targets
+
+        model.compile(
+            optimizer=optimizer,
+            loss=loss,
+            loss_weights=loss_weights,
+            metrics=metrics,
         )
 
         # Explicitly build model with expected input shapes: (batch, n_genes, feat_dim) and (batch, n_genes, n_genes)
@@ -395,7 +447,7 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     logger.info(f"Starting training for {epochs} epochs with batch size {batch_size}")
     history = model.fit(
         x=[x_gene, x_adj],
-        y=y_targets,
+        y=y_used,
         epochs=epochs,
         batch_size=1,  # graph-level batch
         validation_split=0.0,  # single graph, use callbacks only

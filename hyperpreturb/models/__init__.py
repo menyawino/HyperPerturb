@@ -1,6 +1,4 @@
-"""
-Core model architecture for the HyperPerturb framework.
-"""
+"""Core model architecture for the HyperPerturb framework."""
 
 from hyperpreturb.models.hyperbolic import (
     HyperbolicAdam, QuantumAnnealer, HyperbolicDense, HyperbolicAttention
@@ -118,6 +116,54 @@ class HyperbolicGraphConv(tf.keras.layers.Layer):
 
         # Linear projection with bias
         output = tf.linalg.matmul(output, self.kernel) + self.bias
+        return output
+
+
+class EuclideanGraphConv(tf.keras.layers.Layer):
+    """Simple Euclidean graph convolution for ablation/debug.
+
+    Applies adjacency aggregation in Euclidean space followed by a linear
+    projection. This avoids any Poincaré manifold operations so we can
+    compare directly against the hyperbolic version.
+    """
+
+    def __init__(self, units, **kwargs):
+        super().__init__(**kwargs)
+        self.units = units
+
+    def build(self, input_shape):
+        if isinstance(input_shape, (list, tuple)):
+            node_shape = tf.TensorShape(input_shape[0])
+        else:
+            node_shape = tf.TensorShape(input_shape)
+
+        feature_dim = int(node_shape[-1])
+
+        self.kernel = self.add_weight(
+            name="kernel",
+            shape=(feature_dim, self.units),
+            initializer="glorot_uniform",
+            trainable=True,
+            dtype=self.dtype,
+        )
+        self.bias = self.add_weight(
+            name="bias",
+            shape=(self.units,),
+            initializer="zeros",
+            trainable=True,
+            dtype=self.dtype,
+        )
+
+    def call(self, inputs):
+        x, adj = inputs
+
+        # Dense or sparse adjacency support in Euclidean space
+        if isinstance(adj, tf.SparseTensor):
+            support = tf.sparse.sparse_dense_matmul(adj, x)
+        else:
+            support = tf.linalg.matmul(adj, x)
+
+        output = tf.linalg.matmul(support, self.kernel) + self.bias
         return output
 
 # ----------------------------
@@ -260,4 +306,10 @@ class HyperbolicPerturbationModel(tf.keras.Model):
         return log_fc_predictions
 
 # Add to exports
-__all__ = ['HyperPerturbModel', 'HyperbolicPerturbationModel', 'HyperbolicGraphConv', 'STDPRegularizer']
+__all__ = [
+    'HyperPerturbModel',
+    'HyperbolicPerturbationModel',
+    'HyperbolicGraphConv',
+    'EuclideanGraphConv',
+    'STDPRegularizer',
+]

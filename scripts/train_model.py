@@ -98,6 +98,12 @@ def main():
                     help="Path to preprocessed h5ad to skip Scanpy preprocessing.")
     parser.add_argument("--debug", action="store_true",
                     help="Enable debug mode for the advanced trainer (constant LR, NaN checks).")
+    parser.add_argument("--policy_only", action="store_true",
+                    help="Debug: train only the policy head (KL loss only).")
+    parser.add_argument("--no_protein", action="store_true",
+                    help="Debug: drop protein modality from adata.obsm if present.")
+    parser.add_argument("--euclidean_baseline", action="store_true",
+                    help="Debug: use Euclidean baseline model instead of hyperbolic graph convs.")
     
     args = parser.parse_args()
     
@@ -130,6 +136,11 @@ def main():
     if adata is None:
         logger.error("Failed to load data. Exiting.")
         return
+
+    # Optional: debug ablation to drop protein modality entirely
+    if args.no_protein and 'protein' in adata.obsm:
+        logger.info("Debug: dropping protein modality from adata.obsm['protein']")
+        adata.obsm['protein'] = None
     
     # Setup training data
     n_genes = adata.shape[1]
@@ -248,6 +259,8 @@ def main():
             curvature=args.curvature,
             validation_split=args.val_split,
             debug=args.debug,
+            policy_only=args.policy_only,
+            euclidean_baseline=args.euclidean_baseline,
         )
         logger.info("Advanced training completed")
 
