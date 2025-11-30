@@ -140,7 +140,7 @@ def main():
     # Optional: debug ablation to drop protein modality entirely
     if args.no_protein and 'protein' in adata.obsm:
         logger.info("Debug: dropping protein modality from adata.obsm['protein']")
-        adata.obsm['protein'] = None
+        del adata.obsm['protein']
     
     # Setup training data
     n_genes = adata.shape[1]
