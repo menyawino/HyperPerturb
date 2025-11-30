@@ -7,8 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hyperpreturb.models import HyperPerturbModel
-from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
-from hyperpreturb.utils.manifolds import PoincareBall
+from hyperpreturb.models.hyperbolic import QuantumAnnealer
 
 # Configure logging
 logging.basicConfig(
@@ -307,11 +306,12 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             curvature=curvature,
         )
 
+        # Fallback: use standard Adam for stability diagnostics.
+        # If this runs without NaNs, the issue likely lies in the
+        # hyperbolic optimizer/manifold interaction rather than
+        # the model architecture or losses.
         q_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
-        optimizer = HyperbolicAdam(
-            learning_rate=q_schedule,
-            manifold=PoincareBall(curvature),
-        )
+        optimizer = tf.keras.optimizers.Adam(learning_rate=q_schedule)
         model.compile(
             optimizer=optimizer,
             # Policy head: predict per-gene distribution over perturbations
