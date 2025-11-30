@@ -241,7 +241,7 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
         except Exception as e:
             print(f"Error loading protein network: {e}")
     
-    # If protein data is provided, integrate it
+    # If protein data is provided, integrate it as a separate modality
     if protein_path and os.path.exists(protein_path):
         try:
             print(f"Loading protein data from {protein_path}")
@@ -256,8 +256,9 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
                 rna_subset = rna_adata[common_cells]
                 protein_subset = protein_adata[common_cells]
                 
-                # Add protein data as an additional layer in the RNA AnnData object
-                rna_subset.layers['protein'] = protein_subset.X
+                # Store protein expression as separate modality; shape (n_cells, n_proteins)
+                # Using obsm avoids the (n_obs, n_vars) constraint of layers
+                rna_subset.obsm['protein'] = protein_subset.X
                 
                 # Use the subset with both modalities
                 rna_adata = rna_subset
