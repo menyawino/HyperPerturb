@@ -225,13 +225,19 @@ class HyperPerturbModel(tf.keras.Model):
         super().__init__(**kwargs)
         self.manifold = PoincareBall(curvature)
         # Encoder stack operating on (node_features, adjacency)
-        self.encoder_gcn1 = HyperbolicGraphConv(512, curvature=curvature)
+        self.encoder_gcn1 = HyperbolicGraphConv(
+            512, curvature=curvature, euclidean_mode=True
+        )
         self.encoder_norm = tf.keras.layers.LayerNormalization()
-        self.encoder_gcn2 = HyperbolicGraphConv(256, curvature=curvature)
+        self.encoder_gcn2 = HyperbolicGraphConv(
+            256, curvature=curvature, euclidean_mode=True
+        )
         self.encoder_dropout = tf.keras.layers.Dropout(0.3)
 
         # Policy and value heads; each takes (encoded_nodes, adjacency)
-        self.policy_gcn = HyperbolicGraphConv(128, curvature=curvature)
+        self.policy_gcn = HyperbolicGraphConv(
+            128, curvature=curvature, euclidean_mode=True
+        )
         # Policy head output: per-gene distribution over perturbations
         self.policy_dense = tf.keras.layers.Dense(
             num_perts,
@@ -239,7 +245,9 @@ class HyperPerturbModel(tf.keras.Model):
             name="policy_output",
         )
 
-        self.value_gcn = HyperbolicGraphConv(128, curvature=curvature)
+        self.value_gcn = HyperbolicGraphConv(
+            128, curvature=curvature, euclidean_mode=True
+        )
         self.value_dense = tf.keras.layers.Dense(1, name="value_output")
 
     def call(self, inputs, training=False, debug=False):
