@@ -242,11 +242,12 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
     # AnnData object so subsequent runs (including evaluation scripts) can reuse it.
     if preprocessed_path is not None:
         try:
+            print(f"DEBUG: attempting to write preprocessed AnnData to {preprocessed_path}")
             os.makedirs(os.path.dirname(preprocessed_path), exist_ok=True)
             rna_adata.write(preprocessed_path)
             print(f"Saved preprocessed perturbation data to {preprocessed_path}")
         except Exception as e:
-            print(f"Warning: failed to save preprocessed data to {preprocessed_path}: {e}")
+            print(f"ERROR: failed to save preprocessed data to {preprocessed_path}: {e}")
     
     # Compute adjacency matrix from PPI network if provided
     adj_matrix = None
@@ -287,4 +288,15 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
         except Exception as e:
             print(f"Error integrating protein data: {e}")
     
+    # Final safeguard: if a preprocessed_path was given and the file still doesn't exist,
+    # try one more time to write it so downstream scripts can rely on it.
+    if preprocessed_path is not None and not os.path.exists(preprocessed_path):
+        try:
+            print(f"DEBUG: retrying write of preprocessed AnnData to {preprocessed_path}")
+            os.makedirs(os.path.dirname(preprocessed_path), exist_ok=True)
+            rna_adata.write(preprocessed_path)
+            print(f"Saved preprocessed perturbation data on retry to {preprocessed_path}")
+        except Exception as e:
+            print(f"ERROR: second attempt to save preprocessed data failed for {preprocessed_path}: {e}")
+
     return rna_adata, adj_matrix
