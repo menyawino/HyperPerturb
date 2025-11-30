@@ -267,11 +267,28 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     sum_per_gene = np.where(sum_per_gene == 0.0, 1.0, sum_per_gene)  # avoid division by zero
     per_gene_pert_dist = per_gene_pert_reward / sum_per_gene  # (n_genes, n_perts)
 
-    # Label smoothing / epsilon to avoid exact zeros and ones that can
-    # destabilize KL divergence (log(0) -> -inf).
-    eps = 1e-5
-    per_gene_pert_dist = np.clip(per_gene_pert_dist, eps, 1.0)
-    per_gene_pert_dist = per_gene_pert_dist / np.sum(per_gene_pert_dist, axis=-1, keepdims=True)
+    # ------------------------
+    # Label smoothing / temperature scaling
+    # ------------------------
+    # Many genes will have very peaked reward distributions over
+    # perturbations. To avoid punishing near-misses too harshly and to
+    # stabilize KL, we apply:
+    #   1) a softmax with temperature < 1 over per_gene_pert_reward
+    #   2) light label smoothing toward a uniform distribution.
+    temperature = 0.7
+    # Recompute a softmax distribution with temperature
+    logits = per_gene_pert_reward / max(temperature, 1e-6)
+    # For numerical stability, subtract max per row before exp
+    logits = logits - np.max(logits, axis=-1, keepdims=True)
+    exp_logits = np.exp(logits)
+    exp_sum = np.sum(exp_logits, axis=-1, keepdims=True)
+    exp_sum = np.where(exp_sum == 0.0, 1.0, exp_sum)
+    softmax_dist = exp_logits / exp_sum
+
+    # Label smoothing toward uniform over perturbations
+    smoothing = 0.05
+    uniform = np.full_like(softmax_dist, 1.0 / n_perts)
+    per_gene_pert_dist = (1.0 - smoothing) * softmax_dist + smoothing * uniform
 
     # Sanity logging for policy targets
     logger.info(
