@@ -17,6 +17,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def safe_kl_divergence(eps=1e-6, name="policy_kld"):
+    """KL-divergence loss with safeguards for numerical stability.
+
+    Clips predictions to [eps, 1] and renormalizes so they form
+    valid probability distributions before computing KL.
+    """
+    base_kl = tf.keras.losses.KLDivergence(name=name)
+
+    def loss_fn(y_true, y_pred):
+        y_pred = tf.clip_by_value(y_pred, eps, 1.0)
+        y_pred /= tf.reduce_sum(y_pred, axis=-1, keepdims=True)
+        return base_kl(y_true, y_pred)
+
+    return loss_fn
+
 # ----------------------------
 # Adaptive Curriculum Learning
 # ----------------------------
@@ -299,7 +315,7 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             ),
             # Policy head: predict per-gene distribution over perturbations
             loss=[
-                tf.keras.losses.KLDivergence(name="policy_kld"),
+                safe_kl_divergence(name="policy_kld"),
                 tf.keras.losses.MeanSquaredError(name="value_mse"),
             ],
             loss_weights=[1.0, 0.5],
