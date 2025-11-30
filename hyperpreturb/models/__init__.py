@@ -225,10 +225,10 @@ class HyperPerturbModel(tf.keras.Model):
         super().__init__(**kwargs)
         self.manifold = PoincareBall(curvature)
         # Encoder stack operating on (node_features, adjacency)
-        # Start with encoder fully Euclidean; adjust euclidean_mode flags
-        # during ablation experiments to reintroduce manifold ops gradually.
+        # Stage 2 ablation: make only the first encoder layer hyperbolic
+        # while keeping the second encoder, policy, and value GCNs Euclidean.
         self.encoder_gcn1 = HyperbolicGraphConv(
-            512, curvature=curvature, euclidean_mode=True
+            512, curvature=curvature, euclidean_mode=False
         )
         self.encoder_norm = tf.keras.layers.LayerNormalization()
         self.encoder_gcn2 = HyperbolicGraphConv(
