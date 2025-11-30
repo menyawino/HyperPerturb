@@ -154,6 +154,7 @@ class HyperPerturbModel(tf.keras.Model):
         # Policy head output: per-gene distribution over perturbations
         self.policy_dense = tf.keras.layers.Dense(
             num_perts,
+            activation="softmax",  # force probabilities at the head
             name="policy_output",
         )
 
@@ -179,6 +180,11 @@ class HyperPerturbModel(tf.keras.Model):
         # Policy head
         policy_h = self.policy_gcn((h, adj))
         policy_logits = self.policy_dense(policy_h)
+
+        # Extra numerical safety: clip and renormalize policy distribution
+        eps = 1e-6
+        policy_logits = tf.clip_by_value(policy_logits, eps, 1.0)
+        policy_logits /= tf.reduce_sum(policy_logits, axis=-1, keepdims=True)
 
         # Value head
         value_h = self.value_gcn((h, adj))
