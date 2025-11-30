@@ -161,7 +161,7 @@ class HyperPerturbModel(tf.keras.Model):
         self.value_gcn = HyperbolicGraphConv(128, curvature=curvature)
         self.value_dense = tf.keras.layers.Dense(1, name="value_output")
 
-    def call(self, inputs, training=False):
+    def call(self, inputs, training=False, debug=False):
         """Forward pass.
 
         Args:
@@ -173,22 +173,36 @@ class HyperPerturbModel(tf.keras.Model):
 
         # Encoder
         h = self.encoder_gcn1((x, adj))
+        if debug:
+            tf.debugging.check_numerics(h, "NaN/Inf after encoder_gcn1")
         h = self.encoder_norm(h)
         h = self.encoder_gcn2((h, adj))
+        if debug:
+            tf.debugging.check_numerics(h, "NaN/Inf after encoder_gcn2")
         h = self.encoder_dropout(h, training=training)
 
         # Policy head
         policy_h = self.policy_gcn((h, adj))
+        if debug:
+            tf.debugging.check_numerics(policy_h, "NaN/Inf after policy_gcn")
         policy_logits = self.policy_dense(policy_h)
+        if debug:
+            tf.debugging.check_numerics(policy_logits, "NaN/Inf after policy_dense (pre-clip)")
 
         # Extra numerical safety: clip and renormalize policy distribution
         eps = 1e-6
         policy_logits = tf.clip_by_value(policy_logits, eps, 1.0)
         policy_logits /= tf.reduce_sum(policy_logits, axis=-1, keepdims=True)
+        if debug:
+            tf.debugging.check_numerics(policy_logits, "NaN/Inf after policy renorm")
 
         # Value head
         value_h = self.value_gcn((h, adj))
+        if debug:
+            tf.debugging.check_numerics(value_h, "NaN/Inf after value_gcn")
         value = self.value_dense(value_h)
+        if debug:
+            tf.debugging.check_numerics(value, "NaN/Inf after value_dense")
 
         return policy_logits, value
 
