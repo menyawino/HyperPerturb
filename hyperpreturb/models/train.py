@@ -145,7 +145,7 @@ class PerturbationEnv:
 # Full Training Pipeline (Graph-based HyperPerturbModel)
 # ----------------------------
 def train_model(adata, adj_matrix=None, model_dir="models/saved", 
-                epochs=200, batch_size=128, learning_rate=1e-4,
+                epochs=200, batch_size=128, learning_rate=1e-5,
                 curvature=1.0, validation_split=0.1):
     """
     Full training pipeline for the HyperPerturb model.
@@ -308,11 +308,12 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         )
 
         q_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
+        optimizer = HyperbolicAdam(
+            learning_rate=q_schedule,
+            manifold=PoincareBall(curvature),
+        )
         model.compile(
-            optimizer=HyperbolicAdam(
-                learning_rate=q_schedule,
-                manifold=PoincareBall(curvature)
-            ),
+            optimizer=optimizer,
             # Policy head: predict per-gene distribution over perturbations
             loss=[
                 safe_kl_divergence(name="policy_kld"),
