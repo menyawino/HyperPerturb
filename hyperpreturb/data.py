@@ -237,6 +237,16 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
     
     # Prepare perturbation data
     rna_adata = prepare_perturbation_data(rna_adata)
+
+    # Optionally save the fully processed (including perturbation targets and log-fold change)
+    # AnnData object so subsequent runs (including evaluation scripts) can reuse it.
+    if preprocessed_path is not None:
+        try:
+            os.makedirs(os.path.dirname(preprocessed_path), exist_ok=True)
+            rna_adata.write(preprocessed_path)
+            print(f"Saved preprocessed perturbation data to {preprocessed_path}")
+        except Exception as e:
+            print(f"Warning: failed to save preprocessed data to {preprocessed_path}: {e}")
     
     # Compute adjacency matrix from PPI network if provided
     adj_matrix = None
