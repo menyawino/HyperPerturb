@@ -327,19 +327,31 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         else:
             base_model_cls = HyperPerturbModel
 
-        # Wrap model in a debug-aware subclass so that Keras always
-        # calls with debug=True when requested via the train_model
-        # debug flag. In normal runs, use the base model class.
+        # Wrap model in a debug-aware subclass so that Keras always calls
+        # with internal debug checks enabled. In policy_only+debug mode,
+        # expose only the policy output so the model is single-output.
         if debug:
-            class DebugHyperPerturbModel(base_model_cls):  # type: ignore[misc]
-                def call(self, inputs, training=False, debug=False):  # type: ignore[override]
-                    return super().call(inputs, training=training, debug=True)
+            if policy_only:
+                class DebugPolicyOnlyModel(base_model_cls):  # type: ignore[misc]
+                    def call(self, inputs, training=False, debug=False):  # type: ignore[override]
+                        policy_logits, _ = super().call(inputs, training=training, debug=True)
+                        return policy_logits
 
-            model = DebugHyperPerturbModel(
-                num_genes=n_genes,
-                num_perts=n_perts,
-                curvature=curvature,
-            )
+                model = DebugPolicyOnlyModel(
+                    num_genes=n_genes,
+                    num_perts=n_perts,
+                    curvature=curvature,
+                )
+            else:
+                class DebugHyperPerturbModel(base_model_cls):  # type: ignore[misc]
+                    def call(self, inputs, training=False, debug=False):  # type: ignore[override]
+                        return super().call(inputs, training=training, debug=True)
+
+                model = DebugHyperPerturbModel(
+                    num_genes=n_genes,
+                    num_perts=n_perts,
+                    curvature=curvature,
+                )
         else:
             model = base_model_cls(
                 num_genes=n_genes,
