@@ -7,7 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 from hyperpreturb.models import HyperPerturbModel
-from hyperpreturb.models.hyperbolic import QuantumAnnealer
+from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
+from hyperpreturb.utils.manifolds import PoincareBall
 
 # Configure logging
 logging.basicConfig(
@@ -145,7 +146,8 @@ class PerturbationEnv:
 # ----------------------------
 def train_model(adata, adj_matrix=None, model_dir="models/saved", 
                 epochs=200, batch_size=128, learning_rate=1e-5,
-                curvature=1.0, validation_split=0.1):
+                curvature=1.0, validation_split=0.1,
+                debug=False):
     """
     Full training pipeline for the HyperPerturb model.
     
@@ -158,6 +160,7 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         learning_rate: Initial learning rate
         curvature: Curvature of hyperbolic space
         validation_split: Fraction of data to use for validation
+        debug: If True, enable extra numerical checks and simpler optimizer
         
     Returns:
         Trained model and training history
@@ -306,12 +309,17 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             curvature=curvature,
         )
 
-        # Fallback: use standard Adam for stability diagnostics.
-        # If this runs without NaNs, the issue likely lies in the
-        # hyperbolic optimizer/manifold interaction rather than
-        # the model architecture or losses.
-        q_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
-        optimizer = tf.keras.optimizers.Adam(learning_rate=q_schedule)
+        # Optimizer:
+        # - debug mode: plain Adam with constant small LR (no manifold)
+        # - normal mode: original HyperbolicAdam with QuantumAnnealer schedule
+        if debug:
+            optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+        else:
+            q_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
+            optimizer = HyperbolicAdam(
+                learning_rate=q_schedule,
+                manifold=PoincareBall(curvature),
+            )
         model.compile(
             optimizer=optimizer,
             # Policy head: predict per-gene distribution over perturbations
@@ -334,31 +342,51 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             ]
         )
 
+    # NaN / Inf monitoring callback (debug mode)
+    class NaNMonitor(tf.keras.callbacks.Callback):
+        def on_epoch_end(self, epoch, logs=None):
+            logs = logs or {}
+            bad = False
+            for k, v in logs.items():
+                if v is None:
+                    continue
+                if isinstance(v, (float, int)):
+                    if not np.isfinite(v):
+                        logger.warning(f"Epoch {epoch}: metric {k} is non-finite: {v}")
+                        bad = True
+            if bad and debug:
+                logger.error("Non-finite metrics detected; stopping training early due to debug mode.")
+                self.model.stop_training = True
+
     # Set up callbacks
-    callbacks = [
-        curriculum,
-        tf.keras.callbacks.TensorBoard(
-            log_dir=os.path.join(model_path, 'logs'),
-            histogram_freq=1,
-            update_freq=100
-        ),
-        tf.keras.callbacks.ModelCheckpoint(
-            filepath=os.path.join(model_path, 'checkpoints', 'model_{epoch:02d}.keras'),
-            save_best_only=True,
-            monitor='val_loss'
-        ),
-        tf.keras.callbacks.EarlyStopping(
-            monitor='val_loss',
-            patience=20,
-            restore_best_weights=True
-        ),
-        tf.keras.callbacks.ReduceLROnPlateau(
-            monitor='val_loss',
-            factor=0.5,
-            patience=10,
-            min_lr=1e-6
-        )
-    ]
+    callbacks = [curriculum]
+
+    if debug:
+        callbacks.append(NaNMonitor())
+    else:
+        callbacks.extend([
+            tf.keras.callbacks.TensorBoard(
+                log_dir=os.path.join(model_path, 'logs'),
+                histogram_freq=1,
+                update_freq=100
+            ),
+            tf.keras.callbacks.ModelCheckpoint(
+                filepath=os.path.join(model_path, 'checkpoints', 'model_{epoch:02d}.keras'),
+                save_best_only=True,
+                monitor='val_loss'
+            ),
+            tf.keras.callbacks.EarlyStopping(
+                monitor='val_loss',
+                patience=20,
+                restore_best_weights=True
+            ),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor='val_loss',
+                factor=0.5,
+                patience=10,
+                min_lr=1e-6
+            )
+        ])
     
     # Prepare inputs with batch dimension = 1
     x_gene = gene_features[np.newaxis, ...]          # (1, n_genes, 1)

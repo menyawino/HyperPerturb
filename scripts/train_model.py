@@ -94,6 +94,10 @@ def main():
                     help="Maximum number of cells to keep during preprocessing.")
     parser.add_argument("--val_split", type=float, default=0.2,
                     help="Validation split fraction for advanced trainer.")
+    parser.add_argument("--preprocessed_path", type=str, default=None,
+                    help="Path to preprocessed h5ad to skip Scanpy preprocessing.")
+    parser.add_argument("--debug", action="store_true",
+                    help="Enable debug mode for the advanced trainer (constant LR, NaN checks).")
     
     args = parser.parse_args()
     
@@ -119,6 +123,7 @@ def main():
         args.rna_path,
         args.protein_path if args.use_protein_data else None,
         args.network_path,
+        preprocessed_path=args.preprocessed_path,
     )
     
     # Check if data was successfully loaded
@@ -242,6 +247,7 @@ def main():
             learning_rate=args.learning_rate,
             curvature=args.curvature,
             validation_split=args.val_split,
+            debug=args.debug,
         )
         logger.info("Advanced training completed")
 

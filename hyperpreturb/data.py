@@ -189,7 +189,7 @@ def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-ta
     
     return adata
 
-def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_path=None):
+def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_path=None, preprocessed_path=None):
     """
     Load and preprocess perturbation data with optional protein data and PPI network.
     
@@ -204,6 +204,13 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
     import os
     from pathlib import Path
     
+    # Fast path: load preprocessed AnnData if provided
+    if preprocessed_path is not None and os.path.exists(preprocessed_path):
+        print(f"Loading preprocessed perturbation data from {preprocessed_path}")
+        rna_adata = sc.read_h5ad(preprocessed_path)
+        adj_matrix = None
+        return rna_adata, adj_matrix
+
     # Handle default paths for data files that exist in the project
     if rna_path is None or not os.path.exists(rna_path):
         default_rna_path = Path(__file__).parent.parent / "data" / "raw" / "FrangiehIzar2021_RNA.h5ad"
