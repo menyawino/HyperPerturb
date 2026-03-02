@@ -9,16 +9,9 @@ from pathlib import Path
 from hyperpreturb.utils.data_loader import load_protein_network, create_adjacency_matrix
 
 def download_data(url, output_path, force=False):
-    """Download data from a given URL.
-    
-    Args:
-        url: URL to download from
-        output_path: Path to save the downloaded file
-        force: Whether to force download even if file exists. Default: False
-    """
-    # Create directory if it doesn't exist
+    """Download a file from url. Skips if already exists unless force=True."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
+
     if force or not os.path.exists(output_path):
         print(f"Downloading data from {url} to {output_path}")
         response = requests.get(url, stream=True)
@@ -35,15 +28,7 @@ def download_data(url, output_path, force=False):
         print(f"File {output_path} already exists. Use force=True to re-download.")
 
 def download_string_network(species_id=9606, output_dir="data/raw"):
-    """Download STRING protein-protein interaction network.
-    
-    Args:
-        species_id: NCBI Taxonomy identifier (default: 9606 for human)
-        output_dir: Directory to save the downloaded file
-        
-    Returns:
-        Path to the downloaded file
-    """
+    """Grab STRING PPI network for a given species (default: human)."""
     os.makedirs(output_dir, exist_ok=True)
     string_url = f"https://stringdb-static.org/download/protein.links.full.v11.5/{species_id}.protein.links.full.v11.5.txt.gz"
     output_path = os.path.join(output_dir, f"{species_id}.protein.links.full.v11.5.txt.gz")
@@ -66,43 +51,29 @@ def download_string_network(species_id=9606, output_dir="data/raw"):
     return output_path
 
 def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_cells=3000):
-    """Preprocess raw data and optionally save the processed version.
-    
-    Args:
-        input_path: Path to the raw data file or AnnData object
-        output_path: Path to save the processed data. If None, doesn't save.
-        n_neighbors: Number of neighbors for the neighborhood graph. Default: 15
-        n_pcs: Number of principal components. Default: 50
-        
-    Returns:
-        Processed AnnData object
+    """Standard scanpy preprocessing: filter, normalize, HVG, PCA, neighbors.
+
+    Subsamples to max_cells first (default 3000) to stay under ~10GB RAM.
     """
     print(f"Preprocessing data from {input_path}")
-    
-    # Handle both string paths and AnnData objects
+
     if isinstance(input_path, str) or isinstance(input_path, Path):
         adata = sc.read(input_path)
     else:
-        # Assume input_path is already an AnnData object
         adata = input_path
 
-    # Subsample cells to reduce memory footprint if necessary.
-    # With 10GB RAM, we keep at most `max_cells` (default 3000).
+    # subsample for memory
     if max_cells is not None and adata.n_obs > max_cells:
         adata = adata[adata.obs_names[:max_cells]].copy()
         print(f"Subsampled to {adata.n_obs} cells for memory constraints (10GB-safe cap).")
     
-    # Basic preprocessing
+    # standard scanpy pipeline
     sc.pp.filter_cells(adata, min_genes=200)
     sc.pp.filter_genes(adata, min_cells=3)
-    
-    # Normalize and log-transform
     sc.pp.normalize_total(adata, target_sum=1e4)
     sc.pp.log1p(adata)
-    
-    # Find highly variable genes. Use a moderately larger gene set
-    # (2000 HVGs) to provide more signal for the model while keeping
-    # memory usage manageable.
+
+    # 2000 HVGs — balance between signal and memory
     sc.pp.highly_variable_genes(adata, n_top_genes=2000)
     adata = adata[:, adata.var.highly_variable]
     
@@ -126,15 +97,9 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_
     return adata
 
 def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-targeting'):
-    """Prepare perturbation data by computing fold changes compared to control.
-    
-    Args:
-        adata: AnnData object
-        ctrl_key: Key in adata.obs containing control/perturbation information
-        ctrl_value: Value in ctrl_key that identifies control samples
-        
-    Returns:
-        AnnData object with added perturbation effects
+    """Compute log fold-changes vs control and one-hot perturbation labels.
+
+    Looks for 'non-targeting' first, falls back to 'control'.
     """
     # Select control column and label based on available metadata
     if ctrl_key not in adata.obs.columns:

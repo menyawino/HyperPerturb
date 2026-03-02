@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Add the project directory to the path
 import sys
-sys.path.append("/mnt/omar/projects/hyperperturb")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Import the hyperperturb modules
 from hyperpreturb.data import (
@@ -75,7 +75,7 @@ def main():
                         help="Path to the protein expression data (h5ad, optional)")
     parser.add_argument("--network_path", type=str, default=None,
                         help="Path to protein-protein interaction network (optional)")
-    parser.add_argument("--output_dir", type=str, default="/mnt/omar/projects/hyperperturb/models/saved",
+    parser.add_argument("--output_dir", type=str, default="models/saved",
                         help="Directory to save the trained model")
     # Defaults tuned for ~10GB system RAM
     parser.add_argument("--epochs", type=int, default=30, help="Number of training epochs")
@@ -111,7 +111,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Set default paths for the data files if not provided
-    default_data_dir = Path("/mnt/omar/projects/hyperperturb/data/raw")
+    default_data_dir = Path(os.path.join(os.path.dirname(__file__), "..", "data", "raw"))
     
     if args.rna_path is None:
         args.rna_path = default_data_dir / "FrangiehIzar2021_RNA.h5ad"

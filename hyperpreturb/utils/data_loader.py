@@ -7,18 +7,7 @@ import scipy.sparse as sp
 from pathlib import Path
 
 def load_data(path, normalize=True, log_transform=True, highly_variable=3000):
-    """
-    Load AnnData object from h5ad file with advanced preprocessing.
-    
-    Args:
-        path: Path to the h5ad file
-        normalize: Whether to normalize the data. Default: True
-        log_transform: Whether to apply log transformation. Default: True
-        highly_variable: Number of highly variable genes to keep. Default: 3000
-        
-    Returns:
-        Processed AnnData object
-    """
+    """Load h5ad and run basic preprocessing (normalize, log1p, HVG filter)."""
     adata = sc.read_h5ad(path)
     
     # Apply standard preprocessing steps
@@ -34,21 +23,10 @@ def load_data(path, normalize=True, log_transform=True, highly_variable=3000):
     
     return adata
 
-def load_protein_network(string_path="data/raw/protein.links.v12.0.txt", 
+def load_protein_network(string_path="data/raw/protein.links.v12.0.txt",
                          gene_mapping_path=None,
                          confidence=700):
-    """
-    Load and process STRING protein-protein interaction network.
-    
-    Args:
-        string_path: Path to STRING database file
-        gene_mapping_path: Path to gene name mapping file (optional)
-        confidence: Confidence threshold for interactions. Default: 700 (high confidence)
-        
-    Returns:
-        Processed network as a pandas DataFrame
-    """
-    # Load the raw network data
+    """Load STRING PPI network, filter by confidence score."""
     network_df = pd.read_csv(string_path, sep=' ')
     
     # Filter by confidence score
@@ -68,17 +46,7 @@ def load_protein_network(string_path="data/raw/protein.links.v12.0.txt",
     return network_df
 
 def create_adjacency_matrix(network_df, gene_list, weighted=True):
-    """
-    Create adjacency matrix from network data.
-    
-    Args:
-        network_df: DataFrame with network data
-        gene_list: List of genes to include in the adjacency matrix
-        weighted: Whether to use weighted edges. Default: True
-        
-    Returns:
-        Sparse adjacency matrix
-    """
+    """Build sparse adjacency matrix from network edges, aligned to gene_list."""
     gene_indices = {gene: i for i, gene in enumerate(gene_list)}
     
     # Get edges between genes that exist in the gene list
@@ -108,20 +76,8 @@ def create_adjacency_matrix(network_df, gene_list, weighted=True):
     return adj.tocsr()
 
 def prepare_tf_dataset(adata, adj_matrix, batch_size=128, shuffle=True, targets=None):
-    """
-    Prepare TensorFlow dataset for model training.
-    
-    Args:
-        adata: AnnData object with gene expression data
-        adj_matrix: Adjacency matrix as scipy sparse matrix
-        batch_size: Batch size for training. Default: 128
-        shuffle: Whether to shuffle the data. Default: True
-        targets: Optional targets for supervised learning
-        
-    Returns:
-        TensorFlow dataset
-    """
-    # Convert sparse to dense if needed
+    """Wrap AnnData + adjacency into a tf.data.Dataset for training."""
+    # Dense expression matrix
     if sp.issparse(adata.X):
         X = adata.X.toarray()
     else:

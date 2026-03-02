@@ -7,74 +7,56 @@ from hyperpreturb.utils.manifolds import PoincareBall
 import tensorflow as tf
 import tensorflow_probability as tfp
 
-# ----------------------------
-# Hyperbolic Operations
-# ----------------------------
+# Helpers for mapping to/from the Poincare ball
 def poincare_expmap(v, c=1.0):
-    # Clip norms to avoid extremely large arguments to tanh
+    """Exp map at the origin: project tangent vector v onto the ball."""
     norm_v = tf.norm(v, axis=-1, keepdims=True)
     norm_v = tf.clip_by_value(norm_v, 0.0, 10.0)
     return tf.math.tanh(tf.sqrt(c) * norm_v) * v / (tf.sqrt(c) * norm_v + 1e-8)
 
 def poincare_logmap(y, c=1.0):
-    # Clip norms to keep arguments to atanh in a safe range
+    """Log map at the origin: pull point y back to tangent space."""
     norm_y = tf.norm(y, axis=-1, keepdims=True)
     norm_y = tf.clip_by_value(norm_y, 0.0, 0.999)
     return tf.math.atanh(tf.sqrt(c) * norm_y) * y / (tf.sqrt(c) * norm_y + 1e-8)
 
+# NOTE: parallel_transport via matrix expm/logm is not correct for the
+# Poincare ball — it's a matrix Lie group operation. Left here for reference
+# but don't use it for actual Riemannian transport.
 @tf.function(jit_compile=True)
 def parallel_transport(x, y):
     return tf.linalg.expm(tf.linalg.logm(tf.linalg.inv(x) @ y))
 
-# ----------------------------
-# Quantum-Inspired Initialization
-# ----------------------------
-class HaarMeasureInitializer(tf.keras.initializers.Initializer):
+
+class ScaledNormalInitializer(tf.keras.initializers.Initializer):
+    """L2-normalized Gaussian init. Nothing fancy, just keeps scales reasonable."""
+
     def __init__(self, epsilon=1e-3):
         self.epsilon = epsilon
         
     def __call__(self, shape, dtype=None):
-        """Simple, robust weight initializer.
-
-        Uses a normalized Gaussian initializer that is compatible with a wide
-        range of TensorFlow versions and avoids advanced linear algebra ops
-        that may be missing on some builds.
-        """
-        # Ensure ``dtype`` is a valid TensorFlow dtype
         if dtype is None:
             dtype = tf.float32
         dtype = tf.as_dtype(dtype)
-
-        # Base Gaussian weights
         w = tf.random.normal(shape, mean=0.0, stddev=1.0, dtype=dtype)
-
-        # Optional small perturbation noise for numerical diversity
         if self.epsilon > 0:
             w += self.epsilon * tf.random.normal(shape, dtype=dtype)
-
-        # L2-normalize over input dimension to keep scales reasonable
         if len(shape) > 0:
             w = tf.math.l2_normalize(w, axis=0)
-
         return w
 
-# ----------------------------
-# Hierarchical Graph Convolution
-# ----------------------------
-class HyperbolicGraphConv(tf.keras.layers.Layer):
-    def __init__(self, units, curvature=1.0, euclidean_mode=False, max_norm=0.9, **kwargs):
-        """Hyperbolic graph convolution with optional Euclidean bypass.
+# Back-compat alias
+HaarMeasureInitializer = ScaledNormalInitializer
 
-        Args:
-            units: Output feature dimension.
-            curvature: Poincare ball curvature.
-            euclidean_mode: If True, skip expmap/logmap and operate purely
-                in Euclidean space. This is useful for debugging numerical
-                issues in the hyperbolic pipeline.
-            max_norm: Maximum allowed norm for points in the ball. Inputs
-                and intermediate tensors are clamped to this radius to keep
-                them safely away from the boundary.
-        """
+class HyperbolicGraphConv(tf.keras.layers.Layer):
+    """Graph convolution with optional Poincare ball projection.
+
+    When euclidean_mode=False: expmap -> adj aggregation -> logmap -> linear.
+    When euclidean_mode=True: just adj aggregation -> linear (for ablation).
+    Norms are clipped to max_norm to avoid boundary explosions.
+    """
+
+    def __init__(self, units, curvature=1.0, euclidean_mode=False, max_norm=0.9, **kwargs):
         super().__init__(**kwargs)
         self.units = units
         self.curvature = curvature
@@ -83,43 +65,22 @@ class HyperbolicGraphConv(tf.keras.layers.Layer):
         self.manifold = PoincareBall(curvature)
         
     def build(self, input_shape):
-        """Build layer weights.
-
-        ``input_shape`` can be either a tuple ``(node_shape, adj_shape)`` or a
-        single tensor shape when Keras traces the layer. We only need the
-        feature dimension of the node representation.
-        """
-        # If we receive a tuple/list, take the node feature shape
+        # input_shape may be (node_shape, adj_shape) or just node_shape
         if isinstance(input_shape, (list, tuple)):
             node_shape = tf.TensorShape(input_shape[0])
         else:
             node_shape = tf.TensorShape(input_shape)
 
         feature_dim = int(node_shape[-1])
-
         self.kernel = self.add_weight(
-            name="kernel",
-            shape=(feature_dim, self.units),
-            initializer=HaarMeasureInitializer(),
-            trainable=True,
-            dtype=self.dtype,
-        )
+            'kernel', (feature_dim, self.units),
+            initializer=ScaledNormalInitializer(), dtype=self.dtype)
         self.bias = self.add_weight(
-            name="bias",
-            shape=(self.units,),
-            initializer="zeros",
-            trainable=True,
-            dtype=self.dtype,
-        )
+            'bias', (self.units,), initializer='zeros', dtype=self.dtype)
         
     def _clip_to_ball(self, x):
-        """Project points to the interior of the Poincare ball.
-
-        This keeps norms below ``max_norm`` to avoid numerical issues near
-        the boundary where expmap/logmap and distances can explode.
-        """
+        """Keep points inside the ball (norm < max_norm)."""
         norm = tf.norm(x, axis=-1, keepdims=True)
-        # If norm > max_norm, rescale back to the sphere of radius max_norm
         scale = tf.where(norm > 0, tf.minimum(1.0, self.max_norm / (norm + 1e-8)), 1.0)
         return x * scale
 
@@ -155,12 +116,7 @@ class HyperbolicGraphConv(tf.keras.layers.Layer):
 
 
 class EuclideanGraphConv(tf.keras.layers.Layer):
-    """Simple Euclidean graph convolution for ablation/debug.
-
-    Applies adjacency aggregation in Euclidean space followed by a linear
-    projection. This avoids any Poincaré manifold operations so we can
-    compare directly against the hyperbolic version.
-    """
+    """Plain Euclidean GCN for ablation against the hyperbolic version."""
 
     def __init__(self, units, **kwargs):
         super().__init__(**kwargs)
@@ -201,26 +157,27 @@ class EuclideanGraphConv(tf.keras.layers.Layer):
         output = tf.linalg.matmul(support, self.kernel) + self.bias
         return output
 
-# ----------------------------
-# Neuromorphic Regularization
-# ----------------------------
-class STDPRegularizer(tf.keras.regularizers.Regularizer):
-    def __init__(self, rho=0.05, beta=1e-3):
-        self.rho = rho
-        self.beta = beta
-        
+# Weight decay regularizer (plain L2)
+# Previously called "STDPRegularizer" which was misleading — there’s no
+# spike-timing dependent plasticity here, just L2 penalty on weights.
+class WeightDecay(tf.keras.regularizers.Regularizer):
+    def __init__(self, strength=1e-3):
+        self.strength = strength
+
     def __call__(self, weights):
-        """Stateless L2-style regularization on weights.
+        return self.strength * tf.reduce_sum(tf.square(weights))
 
-        Using a stateless formulation avoids graph scope and capture issues
-        when this regularizer is used inside compiled `tf.function`s.
-        """
-        return self.beta * tf.reduce_sum(tf.square(weights))
+# Back-compat alias
+STDPRegularizer = WeightDecay
 
-# ----------------------------
-# Core Model Architecture
-# ----------------------------
+# Core model
 class HyperPerturbModel(tf.keras.Model):
+    """Graph neural net with hyperbolic convolutions, dual policy+value heads.
+
+    Encoder: 2 GCN layers (first hyperbolic, second euclidean) + norm + dropout.
+    Policy head: GCN -> dense(softmax) -> per-gene distribution over perturbations.
+    Value head: GCN -> dense -> per-gene scalar sensitivity score.
+    """
     def __init__(self, num_genes, num_perts, curvature=1.0, **kwargs):
         super().__init__(**kwargs)
         self.manifold = PoincareBall(curvature)
@@ -255,13 +212,6 @@ class HyperPerturbModel(tf.keras.Model):
         self.value_dense = tf.keras.layers.Dense(1, name="value_output")
 
     def call(self, inputs, training=False, debug=False):
-        """Forward pass.
-
-        Args:
-            inputs: Tuple ``(x, adj)`` where ``x`` has shape
-                ``(batch, n_nodes, d)`` and ``adj`` is a (possibly
-                sparse) adjacency matrix of shape ``(n_nodes, n_nodes)``.
-        """
         x, adj = inputs
 
         # Encoder
@@ -299,13 +249,10 @@ class HyperPerturbModel(tf.keras.Model):
 
         return policy_logits, value
 
-# ----------------------------
-# Simple HyperbolicPerturbationModel
-# ----------------------------
 class HyperbolicPerturbationModel(tf.keras.Model):
-    """
-    A simple model for predicting gene expression changes in response to perturbations.
-    Uses hyperbolic embeddings to capture hierarchical structure.
+    """Simpler perturbation model: one-hot -> hyperbolic dense layers -> predicted logFC.
+
+    Used by the 'simple' trainer. No graph structure involved.
     """
     def __init__(self, n_genes, n_perturbations, embedding_dim=32, hidden_dim=64, curvature=1.0, **kwargs):
         super().__init__(**kwargs)

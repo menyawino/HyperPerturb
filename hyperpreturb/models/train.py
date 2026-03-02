@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hyperpreturb.models import HyperPerturbModel
-from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
+from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer  # QuantumAnnealer is now CosineExponentialDecay
 from hyperpreturb.utils.manifolds import PoincareBall
 
 # Configure logging
@@ -19,11 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def safe_kl_divergence(eps=1e-6, name="policy_kld"):
-    """KL-divergence loss with safeguards for numerical stability.
-
-    Clips predictions to [eps, 1] and renormalizes so they form
-    valid probability distributions before computing KL.
-    """
+    """KL-divergence with clipping to avoid log(0) blowups."""
     base_kl = tf.keras.losses.KLDivergence(name=name)
 
     def loss_fn(y_true, y_pred):
@@ -33,58 +29,39 @@ def safe_kl_divergence(eps=1e-6, name="policy_kld"):
 
     return loss_fn
 
-# ----------------------------
-# Adaptive Curriculum Learning
-# ----------------------------
 class ComplexityScheduler(tf.keras.callbacks.Callback):
-    """
-    Callback for curriculum learning by gradually increasing task complexity.
-    """
+    """Periodically bump the PerturbationEnv complexity (curriculum learning)."""
+
     def __init__(self, env, factor=1.2, frequency=10):
-        """
-        Initialize the complexity scheduler.
-        
-        Args:
-            env: Environment with increase_complexity method
-            factor: Factor by which to increase complexity. Default: 1.2
-            frequency: How often to increase complexity (epochs). Default: 10
-        """
         super().__init__()
         self.env = env
         self.factor = factor
         self.frequency = frequency
         
     def on_epoch_end(self, epoch, logs=None):
-        """Increase complexity at the end of specified epochs."""
         if epoch > 0 and epoch % self.frequency == 0:
-            logger.info(f"Epoch {epoch}: Increasing complexity by factor {self.factor}")
+            logger.info(f"Epoch {epoch}: bumping complexity by {self.factor}x")
             self.env.increase_complexity(self.factor)
 
-# ----------------------------
-# Perturbation Environment
-# ----------------------------
+
 class PerturbationEnv:
-    """
-    Environment for simulating gene perturbations and evaluating their effects.
+    """Wraps AnnData for perturbation targets and a simple complexity dial.
+
+    Despite the RL-ish interface (step/reset), this is really just a data
+    holder for the supervised training loop. The step() method isn't called
+    during actual training.
     """
     
     def __init__(self, adata, complexity=1.0):
-        """
-        Initialize the perturbation environment.
-        
-        Args:
-            adata: AnnData object with gene expression data
-            complexity: Initial complexity level. Default: 1.0
-        """
         self.adata = adata
         self.current_state = None
         self.complexity = complexity
         self.targets = None
         self._prepare_targets()
         self._reset()
-        
+
     def _prepare_targets(self):
-        """Prepare target variables for supervised learning."""
+        """Build one-hot perturbation labels from adata.obs['perturbation']."""
         # If perturbation annotations exist in the data
         if 'perturbation' in self.adata.obs:
             # Create one-hot encoding of perturbations
@@ -104,16 +81,7 @@ class PerturbationEnv:
         return self.current_state
     
     def step(self, action):
-        """
-        Take a step in the environment by applying a perturbation.
-        
-        Args:
-            action: Perturbation action (gene indices to perturb)
-            
-        Returns:
-            Tuple of (new_state, reward, done, info)
-        """
-        # Convert sparse/one-hot action to dense representation if needed
+        """RL-style step (not used in actual training, kept for API compat)."""
         if len(action.shape) > 1 and action.shape[1] > 1:
             action = tf.argmax(action, axis=1)
         
@@ -144,26 +112,18 @@ class PerturbationEnv:
 # ----------------------------
 # Full Training Pipeline (Graph-based HyperPerturbModel)
 # ----------------------------
-def train_model(adata, adj_matrix=None, model_dir="models/saved", 
+def train_model(adata, adj_matrix=None, model_dir="models/saved",
                 epochs=200, batch_size=128, learning_rate=1e-5,
                 curvature=1.0, validation_split=0.1,
                 debug=False, policy_only=False, euclidean_baseline=False):
-    """
-    Full training pipeline for the HyperPerturb model.
-    
-    Args:
-        adata: AnnData object with gene expression data
-        adj_matrix: Adjacency matrix (optional)
-        model_dir: Directory to save the model
-        epochs: Number of training epochs
-        batch_size: Batch size for training
-        learning_rate: Initial learning rate
-        curvature: Curvature of hyperbolic space
-        validation_split: Fraction of data to use for validation
-        debug: If True, enable extra numerical checks and simpler optimizer
-        
-    Returns:
-        Trained model and training history
+    """Train the HyperPerturbModel on a gene graph.
+
+    Builds per-gene policy targets (which perturbations impact each gene)
+    and value targets (overall gene sensitivity), then fits the dual-head
+    graph model. Returns (model, history).
+
+    WARNING: training frequently diverges to NaN. Use debug=True for
+    constant LR + NaN monitoring if you're diagnosing stability issues.
     """
     # Create timestamp for model directory
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")

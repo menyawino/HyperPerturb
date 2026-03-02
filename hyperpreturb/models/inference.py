@@ -11,27 +11,15 @@ from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
 from hyperpreturb.utils.manifolds import PoincareBall
 
 class HyperPerturbInference:
-    """
-    Inference class for deploying trained HyperPerturb models.
-    
-    This class handles loading of trained models and provides methods
-    for making perturbation predictions and analyzing results.
-    """
-    
+    """Load a trained model and run perturbation predictions."""
+
     def __init__(self, model_path):
-        """
-        Initialize the inference engine with a trained model.
-        
-        Args:
-            model_path: Path to the trained model directory
-        """
         self.model_path = model_path
         self.model = None
         self.config = None
         self._load_model()
-    
+
     def _load_model(self):
-        """Load the trained model and configuration."""
         # Load configuration
         config_path = os.path.join(self.model_path, "config.json")
         try:
@@ -59,17 +47,7 @@ class HyperPerturbInference:
         print(f"Model successfully loaded from {self.model_path}")
     
     def predict_perturbations(self, expression_data, adj_matrix=None, k=5):
-        """
-        Predict optimal perturbations for given expression states.
-        
-        Args:
-            expression_data: Gene expression data (n_cells, n_genes)
-            adj_matrix: Adjacency matrix (optional)
-            k: Number of top perturbations to return for each cell
-            
-        Returns:
-            Tuple of (top_k_indices, top_k_scores, predicted_values)
-        """
+        """Get top-k perturbation predictions for each gene/cell."""
         if self.model is None:
             raise ValueError("Model not loaded. Initialize with a valid model path.")
         
@@ -92,12 +70,7 @@ class HyperPerturbInference:
         return top_k_indices.numpy(), top_k_values.numpy(), values.numpy().flatten()
     
     def interpret_perturbations(self, adata, top_k_indices, gene_names=None):
-        """
-        Interpret perturbation predictions using gene names.
-        
-        Args:
-            adata: AnnData object with gene metadata
-            top_k_indices: Indices of top perturbations
+        """Map perturbation indices back to gene names."""
             gene_names: Optional list of gene names (uses adata.var_names if None)
             
         Returns:
@@ -120,19 +93,12 @@ class HyperPerturbInference:
         
         return pd.DataFrame(results)
     
-    def simulate_perturbation_effect(self, expression_data, perturbation_indices, 
+    def simulate_perturbation_effect(self, expression_data, perturbation_indices,
                                    perturbation_strength=0.8, n_steps=5):
-        """
-        Simulate the effect of applying the predicted perturbations.
-        
-        Args:
-            expression_data: Initial gene expression data
-            perturbation_indices: Indices of genes to perturb
-            perturbation_strength: Strength of perturbation (0-1). Default: 0.8
-            n_steps: Number of simulation steps. Default: 5
-            
-        Returns:
-            Trajectory of expression states after perturbation
+        """Naive perturbation simulation: scales target genes down over n_steps.
+
+        This is a very rough approximation -- just multiplies expression by
+        (1 - strength) at perturbation targets. Not a real biological simulation.
         """
         # Create a copy of expression data to avoid modifying the original
         expression_trajectory = [expression_data.copy()]
@@ -155,22 +121,10 @@ class HyperPerturbInference:
         
         return np.array(expression_trajectory)
     
-    def visualize_perturbation_trajectory(self, adata, expression_trajectory, 
+    def visualize_perturbation_trajectory(self, adata, expression_trajectory,
                                          perturbation_indices, gene_names=None,
                                          reduction='umap'):
-        """
-        Visualize the trajectory of expression after perturbation.
-        
-        Args:
-            adata: AnnData object with dimensionality reduction
-            expression_trajectory: Trajectory from simulate_perturbation_effect
-            perturbation_indices: Indices of perturbed genes
-            gene_names: Optional list of gene names
-            reduction: Dimensionality reduction to use ('umap' or 'pca')
-            
-        Returns:
-            New AnnData object with perturbation trajectory
-        """
+        """UMAP/PCA visualization of original + perturbed expression states."""
         try:
             import anndata as ad
             from scipy.sparse import issparse

@@ -4,23 +4,12 @@ from hyperpreturb.models.hyperbolic import HyperbolicLayer, HyperbolicPoincareBa
 from hyperpreturb.utils.manifolds import PoincareBall
 
 class HyperbolicPerturbationModel(tf.keras.Model):
-    """
-    A model for predicting gene expression changes in response to perturbations,
-    using hyperbolic embeddings to capture the hierarchical structure of gene regulatory networks.
+    """Simple perturbation model: one-hot input -> hyperbolic dense -> predicted logFC.
+
+    Standalone version (legacy). The main model is in models/__init__.py.
     """
     def __init__(self, n_genes, n_perturbations, embedding_dim=32, hidden_dim=64, curvature=1.0, adj_matrix=None):
-        """
-        Initialize the HyperbolicPerturbationModel.
-        
-        Args:
-            n_genes: Number of genes in the dataset
-            n_perturbations: Number of possible perturbations
-            embedding_dim: Dimension of embeddings
-            hidden_dim: Dimension of hidden layers
-            curvature: Curvature of the hyperbolic space (default: 1.0)
-            adj_matrix: Adjacency matrix from PPI network (optional)
-        """
-        super(HyperbolicPerturbationModel, self).__init__()
+        super().__init__()
         
         self.n_genes = n_genes
         self.n_perturbations = n_perturbations
@@ -29,7 +18,7 @@ class HyperbolicPerturbationModel(tf.keras.Model):
         self.curvature = curvature
         
         # Initialize manifold
-        self.manifold = PoincareBall(dim=embedding_dim, curvature=curvature)
+        self.manifold = PoincareBall(curvature=curvature)
         
         # Gene embeddings in hyperbolic space
         self.gene_embeddings = self.add_weight(
@@ -70,38 +59,27 @@ class HyperbolicPerturbationModel(tf.keras.Model):
         # Output projection layer (from hyperbolic to Euclidean space)
         self.output_projection = tf.keras.layers.Dense(n_genes, activation='linear')
         
-    def call(self, inputs, training=False):
-        """
-        Forward pass of the model.
-        
-        Args:
-            inputs: One-hot encoded perturbation targets
-            training: Whether in training mode
-            
-        Returns:
-            Predicted gene expression changes
-        """
-        # Project perturbation inputs to hyperbolic space
+    def call(self, inputs, training=None, mask=None):
+        # project perturbation one-hot -> embedding space
         pert_projected = self.pert_projection(inputs)
         
-        # Normalize to ensure points are inside the Poincaré ball
+        # clip to stay inside the ball
         pert_norm = tf.norm(pert_projected, axis=-1, keepdims=True)
-        max_norm = 0.999  # Keep away from the boundary
+        max_norm = 0.999
         pert_normalized = tf.where(
             pert_norm > max_norm,
             pert_projected * max_norm / pert_norm,
             pert_projected
         )
-        
-        # Get perturbation-specific embeddings
-        # Here we compute a weighted sum of perturbation embeddings based on input
+
+        # weighted sum of perturbation embeddings
         pert_embeddings = tf.matmul(inputs, self.perturbation_embeddings)
-        
-        # Apply hyperbolic layers
+
+        # hyperbolic layers
         h = self.hyperbolic_layer1(pert_normalized)
         h = self.hyperbolic_layer2(h)
-        
-        # Project back to Euclidean space for gene expression predictions
+
+        # back to Euclidean for the final prediction
         log_fc_predictions = self.output_projection(h)
         
         return log_fc_predictions

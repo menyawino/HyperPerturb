@@ -12,7 +12,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Add the project root to the path
-sys.path.insert(0, '/mnt/omar/projects/hyperperturb')
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def print_validation_summary():
     """Print a comprehensive validation summary."""
@@ -96,16 +96,13 @@ def print_validation_summary():
         return False
     
     # Test data availability
-    data_path = "/mnt/omar/projects/hyperperturb/data/raw/FrangiehIzar2021_RNA.h5ad"
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "data", "raw", "FrangiehIzar2021_RNA.h5ad")
     if os.path.exists(data_path):
-        print("\n✅ DATA AVAILABILITY: WORKING")
-        print("   ✓ Dataset file found")
-        print(f"   ✓ Path: {data_path}")
-        print("   ✓ Ready for biological analysis")
+        print("\n  DATA: found")
+        print(f"   Path: {data_path}")
     else:
-        print("\n⚠️  DATA AVAILABILITY: FILE NOT FOUND")
-        print("   ! Dataset file not found")
-        print("   ! Can still work with synthetic data")
+        print("\n  DATA: not found (can use synthetic data for testing)")
     
     return True
 
