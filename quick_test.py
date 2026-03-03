@@ -53,7 +53,7 @@ def test_manifold_basics():
         from hyperpreturb.utils.manifolds import PoincareBall
         
         # Create manifold
-        manifold = PoincareBall(dim=8, curvature=1.0)
+        manifold = PoincareBall(curvature=1.0)
         print("✓ Manifold created")
         
         # Create some points in the ball
@@ -66,7 +66,7 @@ def test_manifold_basics():
         
         # Test exp map
         v = tf.random.normal([3, 8]) * 0.01
-        exp_result = manifold.exp(x, v)
+        exp_result = manifold.expmap(x, v)
         print(f"✓ Exp map: {exp_result.shape}")
         
         return True
@@ -118,10 +118,9 @@ def test_model_creation():
         
         # Test forward pass
         batch_size = 3
-        gene_expr = tf.random.normal([batch_size, 20])
         perturbations = tf.random.uniform([batch_size, 5], maxval=1.0)
-        
-        output = model([gene_expr, perturbations])
+
+        output = model(perturbations)
         
         print(f"✓ Forward pass: {output.shape}")
         print(f"✓ Total params: {model.count_params()}")
@@ -138,9 +137,11 @@ def test_optimizer():
     
     try:
         from hyperpreturb.models.hyperbolic import HyperbolicAdam
+        from hyperpreturb.utils.manifolds import PoincareBall
         
         # Create optimizer
-        optimizer = HyperbolicAdam(learning_rate=0.01, curvature=1.0)
+        manifold = PoincareBall(curvature=1.0)
+        optimizer = HyperbolicAdam(manifold=manifold, learning_rate=0.01)
         print("✓ Optimizer created")
         
         # Simple optimization test
@@ -168,6 +169,7 @@ def test_training_step():
     try:
         from hyperpreturb.models import HyperbolicPerturbationModel
         from hyperpreturb.models.hyperbolic import HyperbolicAdam
+        from hyperpreturb.utils.manifolds import PoincareBall
         
         # Create model and optimizer
         model = HyperbolicPerturbationModel(
@@ -177,17 +179,17 @@ def test_training_step():
             hidden_dim=12,
             curvature=1.0
         )
-        optimizer = HyperbolicAdam(learning_rate=0.01, curvature=1.0)
+        manifold = PoincareBall(curvature=1.0)
+        optimizer = HyperbolicAdam(manifold=manifold, learning_rate=0.01)
         
         # Dummy data
         batch_size = 4
-        gene_expr = tf.random.normal([batch_size, 10])
         perturbations = tf.random.uniform([batch_size, 3], maxval=1.0)
         target = tf.random.normal([batch_size, 10])
         
         # Training step
         with tf.GradientTape() as tape:
-            predictions = model([gene_expr, perturbations])
+            predictions = model(perturbations)
             loss = tf.reduce_mean(tf.square(predictions - target))
         
         gradients = tape.gradient(loss, model.trainable_variables)
@@ -213,7 +215,10 @@ def test_data_module():
         print("✓ Data functions are accessible")
         
         # Check if data file exists
-        data_path = "/mnt/omar/projects/hyperperturb/data/raw/FrangiehIzar2021_RNA.h5ad"
+        data_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "data", "raw", "FrangiehIzar2021_RNA.h5ad"
+        )
         if os.path.exists(data_path):
             print(f"✓ Data file exists: {os.path.basename(data_path)}")
         else:

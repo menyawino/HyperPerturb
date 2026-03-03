@@ -70,11 +70,10 @@ class HyperPerturbInference:
         return top_k_indices.numpy(), top_k_values.numpy(), values.numpy().flatten()
     
     def interpret_perturbations(self, adata, top_k_indices, gene_names=None):
-        """Map perturbation indices back to gene names."""
-            gene_names: Optional list of gene names (uses adata.var_names if None)
-            
-        Returns:
-            DataFrame with gene perturbation interpretations
+        """Map perturbation indices back to gene names.
+
+        If ``gene_names`` is not provided, this uses ``adata.var_names``.
+        Returns a DataFrame with one row per cell and predicted perturbation genes.
         """
         if gene_names is None:
             if hasattr(adata, 'var_names'):
