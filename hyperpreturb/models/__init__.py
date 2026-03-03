@@ -73,10 +73,10 @@ class HyperbolicGraphConv(tf.keras.layers.Layer):
 
         feature_dim = int(node_shape[-1])
         self.kernel = self.add_weight(
-            'kernel', (feature_dim, self.units),
+            name='kernel', shape=(feature_dim, self.units),
             initializer=ScaledNormalInitializer(), dtype=self.dtype)
         self.bias = self.add_weight(
-            'bias', (self.units,), initializer='zeros', dtype=self.dtype)
+            name='bias', shape=(self.units,), initializer='zeros', dtype=self.dtype)
         
     def _clip_to_ball(self, x):
         """Keep points inside the ball (norm < max_norm)."""

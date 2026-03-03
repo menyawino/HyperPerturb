@@ -444,9 +444,19 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         verbose=1,
     )
     
-    # Save final model in Keras format
+    # Save final model in Keras format, with a weights fallback for
+    # debug/non-serializable wrappers.
     final_path = os.path.join(model_path, 'final_model.keras')
-    model.save(final_path)
-    logger.info(f"Model saved to {final_path}")
+    try:
+        model.save(final_path)
+        logger.info(f"Model saved to {final_path}")
+    except (NotImplementedError, TypeError, ValueError) as exc:
+        weights_path = os.path.join(model_path, 'final_model.weights.h5')
+        model.save_weights(weights_path)
+        logger.warning(
+            "Full model serialization failed (%s). Saved weights instead to %s",
+            exc,
+            weights_path,
+        )
     
     return model, history

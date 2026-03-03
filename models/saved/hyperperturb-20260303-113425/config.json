@@ -1,0 +1,9 @@
+{
+  "epochs": 1,
+  "batch_size": 16,
+  "learning_rate": 1e-05,
+  "curvature": 1.0,
+  "validation_split": 0.2,
+  "n_genes": 40,
+  "n_cells": 64
+}
