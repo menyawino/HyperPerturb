@@ -99,25 +99,21 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_
 def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-targeting'):
     """Compute log fold-changes vs control and one-hot perturbation labels.
 
-    Looks for 'non-targeting' first, falls back to 'control'.
+    This function is intentionally strict for reproducible scientific runs:
+    the control column and control value must be explicitly present.
     """
-    # Select control column and label based on available metadata
     if ctrl_key not in adata.obs.columns:
-        potential_keys = ['perturbation', 'perturbation_type', 'perturbation_2']
-        for key in potential_keys:
-            if key in adata.obs.columns:
-                ctrl_key = key
-                break
-
-    if ctrl_key not in adata.obs.columns:
-        raise ValueError(f"Could not find control key in data. Available columns: {list(adata.obs.columns)}")
+        raise ValueError(
+            f"Control key '{ctrl_key}' is missing from adata.obs. "
+            f"Available columns: {list(adata.obs.columns)}"
+        )
 
     available = adata.obs[ctrl_key].unique()
-    # Prefer 'non-targeting' if present; otherwise fall back to 'control'
-    if 'non-targeting' in available:
-        ctrl_value = 'non-targeting'
-    elif 'control' in available:
-        ctrl_value = 'control'
+    if ctrl_value not in available:
+        raise ValueError(
+            f"Control value '{ctrl_value}' not found in adata.obs['{ctrl_key}']. "
+            f"Available values: {available}"
+        )
 
     print(f"Using '{ctrl_key}' column with control value '{ctrl_value}'")
     
@@ -142,17 +138,18 @@ def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-ta
     else:
         adata.obsm['log_fold_change'] = adata.X - control_mean
     
-    # Add perturbation targets
-    if 'perturbation' in adata.obs:
-        # Create one-hot encoding of perturbation targets
-        perturbations = adata.obs['perturbation'].unique()
-        pert_dict = {pert: i for i, pert in enumerate(perturbations)}
-        
-        one_hot = np.zeros((adata.n_obs, len(perturbations)))
-        for i, pert in enumerate(adata.obs['perturbation']):
-            one_hot[i, pert_dict[pert]] = 1
-        
-        adata.obsm['perturbation_target'] = one_hot
+    if 'perturbation' not in adata.obs:
+        raise ValueError("Expected 'perturbation' column in adata.obs to build perturbation targets.")
+
+    # Create one-hot encoding of perturbation targets
+    perturbations = adata.obs['perturbation'].unique()
+    pert_dict = {pert: i for i, pert in enumerate(perturbations)}
+
+    one_hot = np.zeros((adata.n_obs, len(perturbations)), dtype=np.float32)
+    for i, pert in enumerate(adata.obs['perturbation']):
+        one_hot[i, pert_dict[pert]] = 1.0
+
+    adata.obsm['perturbation_target'] = one_hot
     
     return adata
 
@@ -178,20 +175,16 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
         adj_matrix = None
         return rna_adata, adj_matrix
 
-    # Handle default paths for data files that exist in the project
-    if rna_path is None or not os.path.exists(rna_path):
-        default_rna_path = Path(__file__).parent.parent / "data" / "raw" / "FrangiehIzar2021_RNA.h5ad"
-        if os.path.exists(default_rna_path):
-            print(f"Using default RNA data file: {default_rna_path}")
-            rna_path = default_rna_path
-        else:
-            raise FileNotFoundError(f"RNA data file not found at {rna_path}")
-    
-    if protein_path is None:
-        default_protein_path = Path(__file__).parent.parent / "data" / "raw" / "FrangiehIzar2021_protein.h5ad"
-        if os.path.exists(default_protein_path):
-            print(f"Found protein data file: {default_protein_path}")
-            protein_path = default_protein_path
+    if rna_path is None:
+        raise ValueError("rna_path must be provided explicitly.")
+    if not os.path.exists(rna_path):
+        raise FileNotFoundError(f"RNA data file not found at {rna_path}")
+
+    if protein_path is not None and not os.path.exists(protein_path):
+        raise FileNotFoundError(f"Protein data file not found at {protein_path}")
+
+    if network_path is not None and not os.path.exists(network_path):
+        raise FileNotFoundError(f"Protein network file not found at {network_path}")
     
     # Load RNA data
     print(f"Loading RNA data from {rna_path}")
@@ -203,65 +196,41 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
     # Prepare perturbation data
     rna_adata = prepare_perturbation_data(rna_adata)
 
-    # Optionally save the fully processed (including perturbation targets and log-fold change)
-    # AnnData object so subsequent runs (including evaluation scripts) can reuse it.
+    # Optionally save fully processed AnnData for reproducible reruns.
     if preprocessed_path is not None:
-        try:
-            print(f"DEBUG: attempting to write preprocessed AnnData to {preprocessed_path}")
-            os.makedirs(os.path.dirname(preprocessed_path), exist_ok=True)
-            rna_adata.write(preprocessed_path)
-            print(f"Saved preprocessed perturbation data to {preprocessed_path}")
-        except Exception as e:
-            print(f"ERROR: failed to save preprocessed data to {preprocessed_path}: {e}")
+        os.makedirs(os.path.dirname(preprocessed_path), exist_ok=True)
+        rna_adata.write(preprocessed_path)
+        print(f"Saved preprocessed perturbation data to {preprocessed_path}")
     
     # Compute adjacency matrix from PPI network if provided
     adj_matrix = None
-    if network_path and os.path.exists(network_path):
-        try:
-            from hyperpreturb.utils.data_loader import load_protein_network, create_adjacency_matrix
-            print(f"Loading protein network from {network_path}")
-            network_df = load_protein_network(network_path)
-            gene_list = rna_adata.var_names.tolist()
-            adj_matrix = create_adjacency_matrix(network_df, gene_list)
-        except Exception as e:
-            print(f"Error loading protein network: {e}")
+    if network_path is not None:
+        print(f"Loading protein network from {network_path}")
+        network_df = load_protein_network(network_path)
+        gene_list = rna_adata.var_names.tolist()
+        adj_matrix = create_adjacency_matrix(network_df, gene_list)
     
     # If protein data is provided, integrate it as a separate modality
-    if protein_path and os.path.exists(protein_path):
-        try:
-            print(f"Loading protein data from {protein_path}")
-            protein_adata = sc.read_h5ad(protein_path)
-            
-            # Match protein data with RNA data
-            common_cells = list(set(protein_adata.obs_names).intersection(set(rna_adata.obs_names)))
-            if len(common_cells) > 0:
-                print(f"Found {len(common_cells)} common cells between RNA and protein data")
-                
-                # Subset both datasets to common cells
-                rna_subset = rna_adata[common_cells]
-                protein_subset = protein_adata[common_cells]
-                
-                # Store protein expression as separate modality; shape (n_cells, n_proteins)
-                # Using obsm avoids the (n_obs, n_vars) constraint of layers
-                rna_subset.obsm['protein'] = protein_subset.X
-                
-                # Use the subset with both modalities
-                rna_adata = rna_subset
-                print("Successfully integrated protein data with RNA data")
-            else:
-                print("No common cells found between RNA and protein data")
-        except Exception as e:
-            print(f"Error integrating protein data: {e}")
-    
-    # Final safeguard: if a preprocessed_path was given and the file still doesn't exist,
-    # try one more time to write it so downstream scripts can rely on it.
-    if preprocessed_path is not None and not os.path.exists(preprocessed_path):
-        try:
-            print(f"DEBUG: retrying write of preprocessed AnnData to {preprocessed_path}")
-            os.makedirs(os.path.dirname(preprocessed_path), exist_ok=True)
-            rna_adata.write(preprocessed_path)
-            print(f"Saved preprocessed perturbation data on retry to {preprocessed_path}")
-        except Exception as e:
-            print(f"ERROR: second attempt to save preprocessed data failed for {preprocessed_path}: {e}")
+    if protein_path is not None:
+        print(f"Loading protein data from {protein_path}")
+        protein_adata = sc.read_h5ad(protein_path)
+
+        # Match protein data with RNA data
+        common_cells = list(set(protein_adata.obs_names).intersection(set(rna_adata.obs_names)))
+        if len(common_cells) == 0:
+            raise ValueError("No common cells found between RNA and protein data")
+
+        print(f"Found {len(common_cells)} common cells between RNA and protein data")
+
+        # Subset both datasets to common cells
+        rna_subset = rna_adata[common_cells]
+        protein_subset = protein_adata[common_cells]
+
+        # Store protein expression as separate modality; shape (n_cells, n_proteins)
+        rna_subset.obsm['protein'] = protein_subset.X
+
+        # Use the subset with both modalities
+        rna_adata = rna_subset
+        print("Successfully integrated protein data with RNA data")
 
     return rna_adata, adj_matrix

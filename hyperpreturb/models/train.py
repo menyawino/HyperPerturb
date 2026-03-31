@@ -1,8 +1,10 @@
 import tensorflow as tf
 import numpy as np
+import scipy.sparse as sp
 import os
 import logging
 import json
+import random
 from datetime import datetime
 from pathlib import Path
 
@@ -84,6 +86,7 @@ class PerturbationEnv:
         """RL-style step (not used in actual training, kept for API compat)."""
         if len(action.shape) > 1 and action.shape[1] > 1:
             action = tf.argmax(action, axis=1)
+        action_np = np.asarray(action)
         
         # Apply perturbation effect based on action
         if hasattr(self.adata.X, 'toarray'):
@@ -93,7 +96,7 @@ class PerturbationEnv:
         
         # Simulate perturbation effect
         perturb_effect = np.zeros_like(self.current_state)
-        for i, gene_idx in enumerate(action):
+        for i, gene_idx in enumerate(action_np):
             # Apply stronger perturbation based on complexity
             perturb_effect += self.complexity * X[:, gene_idx].mean()
         
@@ -115,7 +118,8 @@ class PerturbationEnv:
 def train_model(adata, adj_matrix=None, model_dir="models/saved",
                 epochs=200, batch_size=128, learning_rate=1e-5,
                 curvature=1.0, validation_split=0.1,
-                debug=False, policy_only=False, euclidean_baseline=False):
+                debug=False, policy_only=False, euclidean_baseline=False,
+                seed=42, deterministic=True):
     """Train the HyperPerturbModel on a gene graph.
 
     Builds per-gene policy targets (which perturbations impact each gene)
@@ -125,6 +129,13 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     WARNING: training frequently diverges to NaN. Use debug=True for
     constant LR + NaN monitoring if you're diagnosing stability issues.
     """
+    # Configure reproducible execution before creating model state.
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.keras.utils.set_random_seed(seed)
+    if deterministic:
+        tf.config.experimental.enable_op_determinism()
+
     # Create timestamp for model directory
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     model_path = os.path.join(model_dir, f"hyperperturb-{timestamp}")
@@ -137,6 +148,8 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         "learning_rate": learning_rate,
         "curvature": curvature,
         "validation_split": validation_split,
+        "seed": seed,
+        "deterministic": deterministic,
         "n_genes": adata.n_vars,
         "n_cells": adata.n_obs,
     }
@@ -154,13 +167,19 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     n_genes = adata.n_vars
 
     if adj_matrix is None:
-        # Identity adjacency if none provided
-        adj_matrix = tf.eye(n_genes, n_genes, dtype=tf.float32)
-    else:
-        # Ensure dense float32 (no extra batch dim)
-        if isinstance(adj_matrix, tf.SparseTensor):
-            adj_matrix = tf.sparse.to_dense(adj_matrix)
-        adj_matrix = tf.cast(adj_matrix, tf.float32)
+        raise ValueError("adj_matrix is required for graph training and cannot be None.")
+
+    # Ensure dense float32 (no extra batch dim)
+    if isinstance(adj_matrix, tf.SparseTensor):
+        adj_matrix = tf.sparse.to_dense(adj_matrix)
+    adj_matrix = tf.cast(adj_matrix, tf.float32)
+
+    if adj_matrix.shape.rank != 2:
+        raise ValueError(f"adj_matrix must be rank-2, got rank {adj_matrix.shape.rank}")
+    if adj_matrix.shape[0] != n_genes or adj_matrix.shape[1] != n_genes:
+        raise ValueError(
+            f"adj_matrix shape must be ({n_genes}, {n_genes}), got {adj_matrix.shape}"
+        )
 
     # Expression matrix: cells × genes
     if hasattr(adata.X, "toarray"):
@@ -192,9 +211,12 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
     # ------------------------
     # env.targets: (n_cells, n_perts) one-hot or similar
     targets = env.targets
-    if hasattr(targets, "toarray"):
-        targets = targets.toarray()
-    targets = np.asarray(targets, dtype="float32")  # (n_cells, n_perts)
+    if targets is None:
+        raise ValueError("PerturbationEnv targets were not initialized.")
+    if isinstance(targets, sp.spmatrix):
+        targets = np.asarray(targets.todense(), dtype="float32")
+    else:
+        targets = np.asarray(targets, dtype="float32")  # (n_cells, n_perts)
 
     # log fold-change: (n_cells, n_genes)
     if "log_fold_change" not in adata.obsm:
@@ -375,13 +397,11 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             metrics=metrics,
         )
 
-        # Explicitly build model with expected input shapes: (batch, n_genes, feat_dim) and (batch, n_genes, n_genes)
-        model.build(
-            input_shape=[
-                (None, n_genes, 1),        # gene_features
-                (None, n_genes, n_genes),  # adj_matrix
-            ]
-        )
+        # Warm-up call to build variables with concrete graph input shapes.
+        _ = model((
+            tf.zeros((1, n_genes, 1), dtype=tf.float32),
+            tf.zeros((1, n_genes, n_genes), dtype=tf.float32),
+        ))
 
     # NaN / Inf monitoring callback (debug mode)
     class NaNMonitor(tf.keras.callbacks.Callback):
@@ -400,7 +420,7 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
                 self.model.stop_training = True
 
     # Set up callbacks
-    callbacks = [curriculum]
+    callbacks: list[tf.keras.callbacks.Callback] = [curriculum]
 
     if debug:
         callbacks.append(NaNMonitor())
@@ -414,15 +434,15 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             tf.keras.callbacks.ModelCheckpoint(
                 filepath=os.path.join(model_path, 'checkpoints', 'model_{epoch:02d}.keras'),
                 save_best_only=True,
-                monitor='val_loss'
+                monitor='loss'
             ),
             tf.keras.callbacks.EarlyStopping(
-                monitor='val_loss',
+                monitor='loss',
                 patience=20,
                 restore_best_weights=True
             ),
             tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='val_loss',
+                monitor='loss',
                 factor=0.5,
                 patience=10,
                 min_lr=1e-6
@@ -439,24 +459,14 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         y=y_used,
         epochs=epochs,
         batch_size=1,  # graph-level batch
-        validation_split=0.0,  # single graph, use callbacks only
+        validation_split=0.0,
         callbacks=callbacks,
         verbose=1,
     )
     
-    # Save final model in Keras format, with a weights fallback for
-    # debug/non-serializable wrappers.
+    # Save final model in Keras format.
     final_path = os.path.join(model_path, 'final_model.keras')
-    try:
-        model.save(final_path)
-        logger.info(f"Model saved to {final_path}")
-    except (NotImplementedError, TypeError, ValueError) as exc:
-        weights_path = os.path.join(model_path, 'final_model.weights.h5')
-        model.save_weights(weights_path)
-        logger.warning(
-            "Full model serialization failed (%s). Saved weights instead to %s",
-            exc,
-            weights_path,
-        )
+    model.save(final_path)
+    logger.info(f"Model saved to {final_path}")
     
     return model, history

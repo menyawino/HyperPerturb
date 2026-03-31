@@ -11,7 +11,7 @@ setup(
     version="1.0.0",
     author="Omar Ahmed",
     author_email="menyawino@gmail.com",
-    description="Perturbation prediction with hyperbolic graph neural networks",
+    description="Strict, fail-fast perturbation response modeling with hyperbolic graph neural networks",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/menyawino/HyperPerturb",

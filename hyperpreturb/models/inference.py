@@ -1,10 +1,8 @@
 import tensorflow as tf
 import numpy as np
-import scanpy as sc
 import pandas as pd
 import os
 import json
-from pathlib import Path
 
 from hyperpreturb.models import HyperPerturbModel
 from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
@@ -32,42 +30,70 @@ class HyperPerturbInference:
         custom_objects = {
             'PoincareBall': PoincareBall,
             'HyperbolicAdam': HyperbolicAdam,
-            'QuantumAnnealer': QuantumAnnealer
+            'QuantumAnnealer': QuantumAnnealer,
+            'HyperPerturbModel': HyperPerturbModel,
         }
         
         # Load model
         try:
             self.model = tf.keras.models.load_model(
-                os.path.join(self.model_path, 'final_model'),
+                os.path.join(self.model_path, 'final_model.keras'),
                 custom_objects=custom_objects
             )
-        except Exception as e:
+        except (OSError, ValueError, TypeError) as e:
             raise ValueError(f"Failed to load model: {str(e)}")
         
         print(f"Model successfully loaded from {self.model_path}")
     
-    def predict_perturbations(self, expression_data, adj_matrix=None, k=5):
-        """Get top-k perturbation predictions for each gene/cell."""
+    def predict_perturbations(self, expression_data, adj_matrix, k=5):
+        """Get top-k perturbation predictions for each gene.
+
+        Args:
+            expression_data: Cell x gene matrix used to derive graph node features.
+            adj_matrix: Gene x gene adjacency matrix used during training.
+            k: Number of top perturbations per gene.
+        """
         if self.model is None:
             raise ValueError("Model not loaded. Initialize with a valid model path.")
-        
-        # Validate input dimensions
+
+        if adj_matrix is None:
+            raise ValueError("adj_matrix is required and cannot be None.")
+
+        # Validate and build graph-level inputs from cell x gene matrix.
+        expression_data = np.asarray(expression_data, dtype=np.float32)
+        if expression_data.ndim != 2:
+            raise ValueError(f"expression_data must be rank-2 (cells x genes), got shape {expression_data.shape}")
+
         if expression_data.shape[1] != self.config.get("n_genes"):
             raise ValueError(f"Input data has {expression_data.shape[1]} genes, "
                              f"but model expects {self.config.get('n_genes')}.")
-        
-        # Ensure adj_matrix is provided or create default
-        if adj_matrix is None:
-            adj_matrix = tf.sparse.eye(expression_data.shape[1])
-        
+
+        gene_features = np.mean(expression_data, axis=0, keepdims=False).astype("float32")
+        gene_features = gene_features[:, np.newaxis]  # (n_genes, 1)
+        x_gene = gene_features[np.newaxis, ...]       # (1, n_genes, 1)
+
+        if isinstance(adj_matrix, tf.SparseTensor):
+            adj_matrix = tf.sparse.to_dense(adj_matrix)
+        adj_matrix = tf.convert_to_tensor(adj_matrix, dtype=tf.float32)
+        if adj_matrix.shape.rank != 2:
+            raise ValueError(f"adj_matrix must be rank-2, got rank {adj_matrix.shape.rank}")
+        if adj_matrix.shape[0] != self.config.get("n_genes") or adj_matrix.shape[1] != self.config.get("n_genes"):
+            raise ValueError(
+                f"adj_matrix shape must be ({self.config.get('n_genes')}, {self.config.get('n_genes')}), got {adj_matrix.shape}"
+            )
+        x_adj = adj_matrix[tf.newaxis, ...]           # (1, n_genes, n_genes)
+
         # Make predictions
-        logits, values = self.model.predict((expression_data, adj_matrix), verbose=0)
-        
-        # Get top k perturbations
-        perturbation_scores = tf.nn.softmax(logits)
+        logits, values = self.model.predict((x_gene, x_adj), verbose=0)
+
+        # Get top k perturbations per gene
+        perturbation_scores = tf.convert_to_tensor(logits, dtype=tf.float32)
+        n_perts = int(perturbation_scores.shape[-1])
+        if k > n_perts:
+            raise ValueError(f"k={k} exceeds number of perturbations ({n_perts})")
         top_k_values, top_k_indices = tf.math.top_k(perturbation_scores, k=k)
-        
-        return top_k_indices.numpy(), top_k_values.numpy(), values.numpy().flatten()
+
+        return top_k_indices.numpy()[0], top_k_values.numpy()[0], np.asarray(values)[0, :, 0]
     
     def interpret_perturbations(self, adata, top_k_indices, gene_names=None):
         """Map perturbation indices back to gene names.

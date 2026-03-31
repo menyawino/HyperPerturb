@@ -9,7 +9,6 @@ import logging
 import tensorflow as tf
 import numpy as np
 import matplotlib.pyplot as plt
-from pathlib import Path
 import scanpy as sc
 import shutil
 import requests
@@ -69,7 +68,7 @@ def main():
     Main function to train the HyperPerturb model.
     """
     parser = argparse.ArgumentParser(description="Train the HyperPerturb model")
-    parser.add_argument("--rna_path", type=str, default=None,
+    parser.add_argument("--rna_path", type=str, required=True,
                         help="Path to the RNA expression data (h5ad)")
     parser.add_argument("--protein_path", type=str, default=None,
                         help="Path to the protein expression data (h5ad, optional)")
@@ -85,6 +84,8 @@ def main():
     parser.add_argument("--hidden_dim", type=int, default=32, help="Dimension of hidden layers")
     parser.add_argument("--curvature", type=float, default=1.0, 
                         help="Curvature parameter for hyperbolic space (1.0 for unit hyperboloid)")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Global random seed for deterministic training setup")
     parser.add_argument("--use_protein_data", action="store_true", 
                         help="Include protein expression data in the model if available")
     parser.add_argument("--trainer", type=str, default="advanced",
@@ -110,18 +111,20 @@ def main():
     # Ensure the output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
     
-    # Set default paths for the data files if not provided
-    default_data_dir = Path(os.path.join(os.path.dirname(__file__), "..", "data", "raw"))
-    
-    if args.rna_path is None:
-        args.rna_path = default_data_dir / "FrangiehIzar2021_RNA.h5ad"
-        logger.info(f"Using default RNA data path: {args.rna_path}")
-    
-    if args.protein_path is None and args.use_protein_data:
-        default_protein_path = default_data_dir / "FrangiehIzar2021_protein.h5ad"
-        if default_protein_path.exists():
-            args.protein_path = default_protein_path
-            logger.info(f"Using default protein data path: {args.protein_path}")
+    if not os.path.exists(args.rna_path):
+        raise FileNotFoundError(f"RNA file not found: {args.rna_path}")
+
+    if args.use_protein_data and args.protein_path is None:
+        raise ValueError("--use_protein_data requires --protein_path to be set explicitly.")
+
+    if args.protein_path is not None and not os.path.exists(args.protein_path):
+        raise FileNotFoundError(f"Protein file not found: {args.protein_path}")
+
+    if args.network_path is not None and not os.path.exists(args.network_path):
+        raise FileNotFoundError(f"Network file not found: {args.network_path}")
+
+    if args.trainer == "advanced" and args.network_path is None:
+        raise ValueError("Advanced trainer requires --network_path with a valid gene graph file.")
     
     # Load and preprocess data
     logger.info("Loading and preprocessing data...")
@@ -134,8 +137,7 @@ def main():
     
     # Check if data was successfully loaded
     if adata is None:
-        logger.error("Failed to load data. Exiting.")
-        return
+        raise RuntimeError("Data loader returned None unexpectedly.")
 
     # Optional: debug ablation to drop protein modality entirely
     if args.no_protein and 'protein' in adata.obsm:
@@ -147,19 +149,16 @@ def main():
     
     # Check if perturbation targets were identified
     if 'perturbation_target' not in adata.obsm:
-        logger.error("No perturbation targets found in the data. Check data preprocessing.")
-        return
+        raise ValueError("No perturbation targets found in adata.obsm['perturbation_target'].")
     
     n_perturbations = adata.obsm['perturbation_target'].shape[1]
     
     if n_perturbations == 0:
-        logger.error("No perturbation targets found in the data. Check data preprocessing.")
-        return
+        raise ValueError("No perturbation targets found in the data.")
     
     # Check if log fold change data exists
     if 'log_fold_change' not in adata.obsm:
-        logger.error("Log fold change data not found. Check data preprocessing.")
-        return
+        raise ValueError("Log fold change data not found in adata.obsm['log_fold_change'].")
     
     logger.info(f"Data loaded: {n_genes} genes, {n_perturbations} perturbation targets")
 
@@ -173,7 +172,6 @@ def main():
             embedding_dim=args.embedding_dim,
             hidden_dim=args.hidden_dim,
             curvature=args.curvature,
-            adj_matrix=adj_matrix
         )
 
         # Compile the model
@@ -188,7 +186,7 @@ def main():
         y = adata.obsm['log_fold_change']
 
         # Add protein data if available (as additional features)
-        if 'protein' in adata.layers and args.use_protein_data:
+        if 'protein' in adata.obsm and args.use_protein_data:
             logger.info("Including protein expression data in model training")
             # Process protein data based on your model architecture
             # For example, you might want to include it as a separate input to the model
@@ -253,14 +251,16 @@ def main():
             adata=adata,
             adj_matrix=adj_matrix,
             model_dir=str(args.output_dir),
-            epochs=min(args.epochs, 50),
-            batch_size=min(args.batch_size, 32),
+            epochs=args.epochs,
+            batch_size=args.batch_size,
             learning_rate=args.learning_rate,
             curvature=args.curvature,
             validation_split=args.val_split,
             debug=args.debug,
             policy_only=args.policy_only,
             euclidean_baseline=args.euclidean_baseline,
+            seed=args.seed,
+            deterministic=True,
         )
         logger.info("Advanced training completed")
 

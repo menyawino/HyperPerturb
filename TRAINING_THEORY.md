@@ -28,14 +28,14 @@ This document explains the theoretical foundations and practical wiring of the H
    - Normalize total counts per cell and apply log1p transformation.
 
 4. **Gene selection and scaling**
-   - Select top 1000 highly variable genes.
+  - Select top 2000 highly variable genes.
    - Scale expression values (capped) for stable downstream PCA/neighbors.
 
 5. **Optional graph building**
    - PCA and neighbor graph (`sc.pp.neighbors`) are computed for exploratory analysis.
 
 6. **Perturbation-specific processing (`prepare_perturbation_data`)**
-   - Detects control samples from columns such as `perturbation` / `perturbation_type`.
+  - Requires explicit control metadata via `ctrl_key`/`ctrl_value` (defaults: `perturbation` / `non-targeting`).
    - Computes a **control mean expression per gene** using control cells.
    - Adds `adata.obsm['log_fold_change']` as `adata.X - control_mean`.
    - Builds a one-hot matrix `adata.obsm['perturbation_target']` giving, per cell, which perturbation was applied.
@@ -149,7 +149,7 @@ The `PoincareBall` class implements Riemannian geometry operations for the Poinc
    - Wraps an `AnnData` object.
    - Prepares `env.targets`:
      - If `perturbation` column exists in `adata.obs`, builds a one-hot matrix of shape `(n_cells, n_perts)`.
-     - Else falls back to using expression values directly as targets.
+  - If the column is missing, advanced training fails earlier in preprocessing due to strict contract checks.
    - Provides simple RL-like `step` and `increase_complexity` methods (used primarily for curriculum learning and logging).
 
 2. **ComplexityScheduler**
@@ -166,8 +166,8 @@ The `PoincareBall` class implements Riemannian geometry operations for the Poinc
 2. **Gene graph inputs**
    - `n_genes = adata.n_vars`.
    - `adj_matrix`:
-     - If provided from PPI/network preprocessing, used directly.
-     - Otherwise defaults to identity (no edges) via `tf.sparse.eye(n_genes, n_genes)`.
+  - Must be provided explicitly from PPI/network preprocessing.
+  - Shape is validated strictly as `(n_genes, n_genes)`; missing adjacency raises `ValueError`.
    - Node features (`gene_features`):
      - `X_dense = adata.X` converted to dense.
      - Per-gene mean across cells:

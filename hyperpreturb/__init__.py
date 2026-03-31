@@ -1,6 +1,6 @@
-"""HyperPerturb: perturbation prediction via hyperbolic graph neural networks."""
+"""HyperPerturb: strict, graph-aware perturbation response modeling."""
 
-__version__ = '0.1.0'
+__version__ = '1.0.0'
 
 from hyperpreturb.data import (
     download_data, download_string_network, preprocess_data,

@@ -1,0 +1,11 @@
+{
+  "epochs": 1,
+  "batch_size": 128,
+  "learning_rate": 1e-05,
+  "curvature": 1.0,
+  "validation_split": 0.1,
+  "seed": 42,
+  "deterministic": true,
+  "n_genes": 4,
+  "n_cells": 6
+}
