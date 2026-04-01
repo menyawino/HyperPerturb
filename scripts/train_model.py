@@ -133,6 +133,7 @@ def main():
         args.protein_path if args.use_protein_data else None,
         args.network_path,
         preprocessed_path=args.preprocessed_path,
+        max_cells=args.max_cells,
     )
     
     # Check if data was successfully loaded
@@ -204,7 +205,7 @@ def main():
             callbacks=[
                 tf.keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True),
                 tf.keras.callbacks.ModelCheckpoint(
-                    filepath=os.path.join(args.output_dir, "model_checkpoint"),
+                    filepath=os.path.join(args.output_dir, "model_checkpoint.keras"),
                     save_best_only=True
                 ),
                 tf.keras.callbacks.TensorBoard(
@@ -219,7 +220,7 @@ def main():
         logger.info(f"Validation loss: {val_results[0]}, Validation MAE: {val_results[1]}")
 
         # Save the trained model
-        model_save_path = os.path.join(args.output_dir, "hyperbolic_model")
+        model_save_path = os.path.join(args.output_dir, "hyperbolic_model.keras")
         model.save(model_save_path)
         logger.info(f"Model saved to {model_save_path}")
 

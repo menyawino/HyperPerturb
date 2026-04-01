@@ -45,6 +45,19 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
+### Google Colab
+
+For a clean Colab VM, use this setup in a notebook cell:
+
+```bash
+!git clone https://github.com/menyawino/HyperPerturb
+%cd HyperPerturb
+!pip install -q -r requirements.txt
+!pip install -q -e .
+```
+
+Colab RAM is limited, so keep `--max_cells` conservative (for example `1500-3000`).
+
 ## Data
 
 We use the Frangieh & Izar (2021) CRISPR perturbation dataset.
@@ -75,7 +88,7 @@ Control handling is strict: by default `prepare_perturbation_data` expects `ctrl
 ```bash
 python scripts/train_model.py \
     --rna_path data/raw/FrangiehIzar2021_RNA.h5ad \
-    --network_path data/raw/9606.protein.links.full.v11.5.txt
+    --network_path data/raw/protein.links.v12.0.txt
 ```
 
 This runs the advanced trainer with defaults: 30 epochs, batch size 16, LR 1e-5, curvature 1.0, seed 42.
@@ -89,7 +102,7 @@ from hyperpreturb.models.train import train_model
 
 adata, adj_matrix = load_and_preprocess_perturbation_data(
     "data/raw/FrangiehIzar2021_RNA.h5ad",
-    network_path="data/raw/protein.links.full.v11.5.txt",
+    network_path="data/raw/protein.links.v12.0.txt",
 )
 
 model, history = train_model(
@@ -125,7 +138,7 @@ from hyperpreturb.utils.data_loader import load_protein_network, create_adjacenc
 inference = HyperPerturbInference("models/saved/hyperperturb-20250413-123456")
 
 gene_list = list(test_gene_names)
-network_df = load_protein_network("data/raw/9606.protein.links.full.v11.5.txt")
+network_df = load_protein_network("data/raw/protein.links.v12.0.txt")
 adj_matrix = create_adjacency_matrix(network_df, gene_list)
 
 top_k_indices, scores, values = inference.predict_perturbations(

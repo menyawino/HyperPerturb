@@ -153,7 +153,13 @@ def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-ta
     
     return adata
 
-def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_path=None, preprocessed_path=None):
+def load_and_preprocess_perturbation_data(
+    rna_path,
+    protein_path=None,
+    network_path=None,
+    preprocessed_path=None,
+    max_cells=3000,
+):
     """
     Load and preprocess perturbation data with optional protein data and PPI network.
     
@@ -191,7 +197,7 @@ def load_and_preprocess_perturbation_data(rna_path, protein_path=None, network_p
     rna_adata = sc.read_h5ad(rna_path)
     
     # Preprocess RNA data
-    rna_adata = preprocess_data(rna_adata)
+    rna_adata = preprocess_data(rna_adata, max_cells=max_cells)
     
     # Prepare perturbation data
     rna_adata = prepare_perturbation_data(rna_adata)
