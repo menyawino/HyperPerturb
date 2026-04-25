@@ -50,15 +50,20 @@ def _load_model_and_config(model_path):
     return model_dir, model, config
 
 
-def _build_adjacency(adata, network_path=None):
+def _build_adjacency(adata, network_path=None, gene_mapping_path=None):
     if network_path is None:
-        return None
-    network_df = load_protein_network(network_path)
+        raise ValueError(
+            "network_path is required for evaluation so held-out metrics use the same gene graph as training."
+        )
+    network_df = load_protein_network(network_path, gene_mapping_path=gene_mapping_path)
     return create_adjacency_matrix(network_df, adata.var_names.tolist())
 
 
-def evaluate(model_path, preprocessed_path, network_path=None):
-    """Evaluate a trained model on held-out perturbation conditions."""
+def evaluate(model_path, preprocessed_path, network_path=None, gene_mapping_path=None, print_output=True):
+    """Evaluate a trained model on held-out perturbation conditions.
+
+    Returns a metrics dictionary so callers can aggregate benchmark runs.
+    """
     if not os.path.exists(preprocessed_path):
         raise FileNotFoundError(f"Preprocessed data not found: {preprocessed_path}")
 
@@ -80,7 +85,11 @@ def evaluate(model_path, preprocessed_path, network_path=None):
     if validation_adata is None:
         raise ValueError("No held-out perturbation split is available for this model configuration.")
 
-    adj_matrix = _build_adjacency(validation_adata, network_path=network_path)
+    adj_matrix = _build_adjacency(
+        validation_adata,
+        network_path=network_path,
+        gene_mapping_path=gene_mapping_path,
+    )
     x_gene, x_adj = build_graph_inputs(validation_adata, adj_matrix=adj_matrix)
     policy_target, value_target, _ = build_signed_effect_targets(
         validation_adata,
@@ -100,13 +109,25 @@ def evaluate(model_path, preprocessed_path, network_path=None):
     value_mse = float(np.mean((value_pred - value_target) ** 2))
     value_mae = float(np.mean(np.abs(value_pred - value_target)))
 
-    print("Evaluation metrics (held-out perturbations):")
-    print(f"  Validation perturbations:   {', '.join(split_metadata['validation_perturbations'])}")
-    print(f"  Policy Huber:              {policy_metrics['policy_huber']:.6f}")
-    print(f"  Policy MAE:                {policy_metrics['policy_mae']:.6f}")
-    print(f"  Policy Sign Accuracy:      {policy_metrics['policy_sign_accuracy']:.4f}")
-    print(f"  Value MSE:                 {value_mse:.6f}")
-    print(f"  Value MAE:                 {value_mae:.6f}")
+    metrics = {
+        "validation_perturbations": split_metadata["validation_perturbations"],
+        "policy_huber": policy_metrics["policy_huber"],
+        "policy_mae": policy_metrics["policy_mae"],
+        "policy_sign_accuracy": policy_metrics["policy_sign_accuracy"],
+        "value_mse": value_mse,
+        "value_mae": value_mae,
+    }
+
+    if print_output:
+        print("Evaluation metrics (held-out perturbations):")
+        print(f"  Validation perturbations:   {', '.join(metrics['validation_perturbations'])}")
+        print(f"  Policy Huber:              {metrics['policy_huber']:.6f}")
+        print(f"  Policy MAE:                {metrics['policy_mae']:.6f}")
+        print(f"  Policy Sign Accuracy:      {metrics['policy_sign_accuracy']:.4f}")
+        print(f"  Value MSE:                 {metrics['value_mse']:.6f}")
+        print(f"  Value MAE:                 {metrics['value_mae']:.6f}")
+
+    return metrics
 
 
 def main():
@@ -126,12 +147,23 @@ def main():
     parser.add_argument(
         "--network_path",
         type=str,
+        required=True,
+        help="STRING network path used to rebuild the training adjacency.",
+    )
+    parser.add_argument(
+        "--gene_mapping_path",
+        type=str,
         default=None,
-        help="Optional STRING network path used to rebuild the training adjacency.",
+        help="Optional STRING protein-to-gene mapping file used to align network IDs with training genes.",
     )
 
     args = parser.parse_args()
-    evaluate(args.model_path, args.preprocessed_path, network_path=args.network_path)
+    evaluate(
+        args.model_path,
+        args.preprocessed_path,
+        network_path=args.network_path,
+        gene_mapping_path=args.gene_mapping_path,
+    )
 
 
 if __name__ == "__main__":

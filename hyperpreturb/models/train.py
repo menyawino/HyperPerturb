@@ -206,7 +206,8 @@ def train_model(
 
     config = {
         "epochs": epochs,
-        "batch_size": batch_size,
+        "batch_size": 1,
+        "requested_batch_size": batch_size,
         "learning_rate": learning_rate,
         "curvature": curvature,
         "validation_split": validation_split,
@@ -327,6 +328,7 @@ def train_model(
     if debug:
         callbacks.append(NaNMonitor())
     else:
+        monitor_metric = "val_loss" if validation_data is not None else "loss"
         os.makedirs(os.path.join(model_path, "checkpoints"), exist_ok=True)
         callbacks.extend(
             [
@@ -338,15 +340,15 @@ def train_model(
                 tf.keras.callbacks.ModelCheckpoint(
                     filepath=os.path.join(model_path, "checkpoints", "model_{epoch:02d}.keras"),
                     save_best_only=True,
-                    monitor="loss",
+                    monitor=monitor_metric,
                 ),
                 tf.keras.callbacks.EarlyStopping(
-                    monitor="loss",
+                    monitor=monitor_metric,
                     patience=20,
                     restore_best_weights=True,
                 ),
                 tf.keras.callbacks.ReduceLROnPlateau(
-                    monitor="loss",
+                    monitor=monitor_metric,
                     factor=0.5,
                     patience=10,
                     min_lr=1e-6,
@@ -354,7 +356,11 @@ def train_model(
             ]
         )
 
-    logger.info("Starting training for %s epochs with batch size %s", epochs, batch_size)
+    logger.info(
+        "Starting training for %s epochs with requested batch size %s (effective graph batch size is 1)",
+        epochs,
+        batch_size,
+    )
     fit_kwargs = {
         "x": [x_gene, x_adj],
         "y": y_used,

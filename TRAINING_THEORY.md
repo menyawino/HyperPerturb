@@ -8,11 +8,12 @@ This document explains the theoretical foundations and practical wiring of the H
 
 - HyperPerturb operates on single-cell perturbation data stored as an `AnnData` object.
 - Core components used in training:
-  - `adata.X`: cells × genes matrix of normalized, log-transformed expression.
+  - `adata.X`: cells × genes working matrix after preprocessing (log-transformed and later scaled for graph features).
+  - `adata.layers['normalized_counts']`: normalized pre-log expression used to compute signed fold-change targets.
   - `adata.obs`: per-cell metadata, including perturbation labels and control indicators.
   - `adata.var`: per-gene metadata.
-  - `adata.obsm['log_fold_change']`: per-cell, per-gene log fold-change vs control.
-  - `adata.obsm['perturbation_target']`: per-cell, one-hot perturbation labels (if available).
+  - `adata.obsm['log_fold_change']`: per-cell, per-gene signed log fold-change vs control, computed from normalized counts.
+  - `adata.obsm['perturbation_target']`: per-cell, one-hot non-control perturbation labels; control cells remain all-zero.
   - `adata.obsm['protein']`: optional per-cell protein expression matrix (e.g., 24 CITE-seq channels), stored as a separate modality when protein data are available.
 
 ### 1.2 Preprocessing pipeline (`hyperpreturb/data.py`)
@@ -25,7 +26,8 @@ This document explains the theoretical foundations and practical wiring of the H
 
 3. **Filtering and normalization**
    - Filter cells with too few genes; filter genes seen in too few cells.
-   - Normalize total counts per cell and apply log1p transformation.
+  - Normalize total counts per cell and store the result in `adata.layers['normalized_counts']`.
+  - Apply `log1p` transformation to the working matrix used for feature construction.
 
 4. **Gene selection and scaling**
   - Select top 2000 highly variable genes.
@@ -36,12 +38,13 @@ This document explains the theoretical foundations and practical wiring of the H
 
 6. **Perturbation-specific processing (`prepare_perturbation_data`)**
   - Requires explicit control metadata via `ctrl_key`/`ctrl_value` (defaults: `perturbation` / `non-targeting`).
-   - Computes a **control mean expression per gene** using control cells.
-   - Adds `adata.obsm['log_fold_change']` as `adata.X - control_mean`.
-   - Builds a one-hot matrix `adata.obsm['perturbation_target']` giving, per cell, which perturbation was applied.
+  - Computes a **control mean expression per gene** using control cells from `adata.layers['normalized_counts']` when available.
+  - Adds `adata.obsm['log_fold_change']` as `log1p(cell_expression) - log1p(control_mean)`.
+  - Builds a one-hot matrix `adata.obsm['perturbation_target']` only for non-control perturbations.
 
 7. **Optional PPI / adjacency**
-   - If a network file is provided, `load_protein_network` and `create_adjacency_matrix` build a gene–gene adjacency aligned to `adata.var_names`.
+  - If a network file is provided, `load_protein_network` and `create_adjacency_matrix` build a gene–gene adjacency aligned to `adata.var_names`.
+  - For STRING protein IDs, a matching `protein.info` mapping file is used to align proteins to gene symbols.
 
 At the end of preprocessing, we have:
 
@@ -104,9 +107,9 @@ The `PoincareBall` class implements Riemannian geometry operations for the Poinc
 
 ## 3. Core Hyperbolic Models
 
-### 3.1 HyperPerturbModel (`hyperpreturb/models/__init__.py`)
+### 3.1 SignedHyperPerturbModel (`hyperpreturb/models/__init__.py`)
 
-`HyperPerturbModel` is the main graph-based model that operates on a gene graph in hyperbolic space.
+`SignedHyperPerturbModel` is the main graph-based model used by the advanced trainer.
 
 - **Inputs:**
   - `x`: node features of shape `(batch, n_nodes, d)`; here `batch=1`, `n_nodes = n_genes`, `d = 1`.
@@ -122,15 +125,16 @@ The `PoincareBall` class implements Riemannian geometry operations for the Poinc
 
 - **Heads:**
   - **Policy head:**
-    - `policy_gcn((h, adj))` → Dense to `num_genes` or `num_perts` depending on configuration.
-    - In the current setup, outputs `(batch, n_genes, n_perts)`: a per-gene distribution over perturbations.
+    - `policy_gcn((h, adj))` produces latent gene embeddings.
+    - Query/key projections score every response-gene/perturbation-gene pair.
+    - In the current setup, outputs `(batch, n_genes, n_genes)`: signed effect scores in gene space.
   - **Value head:**
     - `value_gcn((h, adj))` → Dense to 1, output `(batch, n_genes, 1)`: scalar value per gene.
 
 **Interpretation:**
 
 - The encoder learns hyperbolic embeddings of genes that respect both expression-derived features and the gene–gene adjacency.
-- The policy head learns, for each gene, which perturbations tend to cause large expression changes.
+- The policy head learns, for each response gene, the signed effect associated with perturbing each supervised perturbation gene.
 - The value head summarizes the overall perturbation sensitivity of each gene.
 
 ### 3.2 HyperbolicPerturbationModel
@@ -174,36 +178,32 @@ The `PoincareBall` class implements Riemannian geometry operations for the Poinc
        - `gene_features = mean_cells(X_dense)  # (1, n_genes)`.
        - Add a feature dimension: `(1, n_genes, 1)`.
 
-3. **Per-gene × per-perturbation rewards (policy targets)**
+3. **Per-gene × per-perturbation signed targets (policy targets)**
 
 Given:
-- `targets = env.targets` of shape `(n_cells, n_perts)`.
 - `lfc = adata.obsm['log_fold_change']` of shape `(n_cells, n_genes)`.
+- `supervised_perturbations`: perturbation labels held in for the current split.
 
-We define a reward for each gene–perturbation pair:
+We define a signed effect target for each gene–perturbation pair:
 
-1. For each perturbation `p`:
-   - Select cells where `targets[:, p] > 0.5`.
-   - Compute mean absolute logFC for each gene over these cells.
-   - This yields `per_pert_gene_reward[p, g] = E_{cells with p} |logFC_g|`.
+1. For each supervised perturbation gene `p`:
+  - Select cells with that perturbation label.
+  - Compute mean signed logFC for each response gene over those cells.
+  - Write that vector into the policy target column corresponding to perturbation gene `p`.
 
-2. Transpose to get a per-gene × per-perturbation matrix:
-   - `per_gene_pert_reward[g, p]`, shape `(n_genes, n_perts)`.
+2. Build a same-shape binary mask indicating which perturbation-gene columns are supervised in the current split.
 
-3. Normalize per gene across perturbations to form a probability distribution:
-   - For each gene `g`:
-     - `sum_p R(g, p)`, with safe handling of zeros.
-     - `per_gene_pert_dist[g, p] = R(g, p) / sum_p R(g, p)`.
-   - Final policy target: `graph_policy_target` of shape `(1, n_genes, n_perts)`.
+3. Concatenate targets and mask along the last axis.
+  - Final packed policy target has shape `(1, n_genes, 2 * n_genes)`.
 
 **Interpretation:**
 
-- For each gene, the policy target is a distribution over perturbations indicating which perturbations most strongly impact that gene (under the current dataset).
+- For each response gene, the policy target preserves both effect magnitude and regulation direction for the supervised perturbation genes in the current split.
 
 ### 4.3 Per-gene scalar rewards (value targets)
 
-- From `per_gene_pert_reward[g, p]`, define a scalar per gene:
-  - `per_gene_value[g] = mean_p R(g, p)`.
+- From the supervised signed effects, define a scalar per gene:
+  - `per_gene_value[g] = mean_p |effect(g, p)|`.
 - Final value target: `graph_value_target` of shape `(1, n_genes, 1)`.
 
 **Interpretation:**
@@ -229,20 +229,20 @@ optimizer = HyperbolicAdam(
 model.compile(
   optimizer=optimizer,
   loss=[
-    safe_kl_divergence(name="policy_kld"),  # numerically-stable KL
+    masked_signed_huber_loss(name="policy_huber"),
     tf.keras.losses.MeanSquaredError(name="value_mse"),  # value head
   ],
   loss_weights=[1.0, 0.5],
   metrics=[
-    tf.keras.metrics.MeanAbsoluteError(name="policy_mae"),
+    masked_signed_mae(name="policy_mae"),
     tf.keras.metrics.MeanAbsoluteError(name="value_mae"),
   ],
 )
 ```
 
-Here `safe_kl_divergence` is a thin wrapper around `tf.keras.losses.KLDivergence` that clips the predicted distributions to \([\varepsilon, 1]\) and renormalizes along the last axis before computing KL. This reduces the chance of numerical instabilities (e.g., `nan` from `log(0)`) when training the policy head.
+Here `masked_signed_huber_loss` applies the regression loss only on supervised perturbation-gene columns, which allows train and validation splits to hold out different perturbation conditions while preserving a fixed output shape.
 
-- **Policy head:** learns to match the normalized per-gene perturbation impact distributions.
+- **Policy head:** learns to predict signed gene-space perturbation effects.
 - **Value head:** approximates the scalar per-gene reward.
 
 3. **Training call**
@@ -273,8 +273,8 @@ history = model.fit(
   - Distances and aggregations reflect the geometry of gene–gene interactions more faithfully than Euclidean models in many biological settings.
 
 - **Policy head:**
-  - For each gene, predicts a distribution over perturbations indicating which perturbations are most impactful (in terms of average |logFC|).
-  - Useful for ranking perturbations by expected effect on specific genes.
+  - For each response gene, predicts signed effects for perturbing each supervised perturbation gene.
+  - Useful for ranking candidate perturbations while preserving up- versus down-regulation.
 
 - **Value head:**
   - For each gene, predicts an overall sensitivity or volatility under perturbations.
@@ -283,8 +283,8 @@ history = model.fit(
 ### 5.2 Assumptions and caveats
 
 - **Reward definition:**
-  - Rewards are based on magnitude of log fold-change, not direction (up/down) or causality.
-  - This is appropriate for discovering "impactful" perturbations, but does not by itself encode mechanistic directionality.
+  - The policy target now preserves directionality, but it is still an observational average over perturbed cells rather than a causal intervention estimate.
+  - The target currently assumes perturbation labels map directly to genes in `adata.var_names`.
 
 - **Averaging across cells:**
   - The per-gene, per-perturbation rewards aggregate across all cells with that perturbation.
@@ -299,7 +299,7 @@ history = model.fit(
 Potential future refinements include:
 
 - Conditioning rewards on specific cell types or states (stratified `log_fold_change`).
-- Incorporating directionality (up/down regulation) into the reward definition.
+- Extending supervision beyond single-gene labels that map directly into `adata.var_names`.
 - Using genuine RL loops where actions are perturbation choices and rewards come from simulated or held-out expression responses.
 
 ---
@@ -307,6 +307,6 @@ Potential future refinements include:
 ## 6. Summary
 
 - The training pipeline is built on a rigorous hyperbolic geometric foundation (Poincaré ball, Riemannian optimization) and tailored to perturbation data.
-- Data preprocessing creates control-based log fold-changes and perturbation labels that are transformed into per-gene, per-perturbation rewards.
-- `HyperPerturbModel` consumes a gene graph and learns, in hyperbolic space, both a policy (which perturbations affect which genes) and a value (how sensitive each gene is overall).
+- Data preprocessing creates control-based signed log fold-changes and non-control perturbation labels that are transformed into masked gene-space targets.
+- `SignedHyperPerturbModel` consumes a gene graph and learns, in hyperbolic space, both a signed policy (which perturbations affect which genes and in what direction) and a value (how sensitive each gene is overall).
 - Losses and targets are shape-consistent and scientifically interpretable, making the training loop both mathematically sound and aligned with common biological questions about perturbation impact.

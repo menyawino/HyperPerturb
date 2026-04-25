@@ -3,6 +3,7 @@
 #
 # This script will:
 #   - Download and unpack STRING v12.0 protein-protein interaction network (all species)
+#   - Download the matching STRING protein info table for protein-to-gene mapping
 #   - Download FrangiehIzar2021 protein and RNA perturbation datasets (h5ad) from Figshare
 #
 # All files are placed under data/raw/ and can be used directly
@@ -21,10 +22,15 @@ wget -nc -O "data/raw/protein.links.v12.0.txt.gz" \
 echo "Uncompressing network data..."
 gunzip -f "data/raw/protein.links.v12.0.txt.gz" || true
 
-# NOTE: v12.0 generic file does not come with a per-species info table in this script.
-# If you need gene symbol mappings, you can either:
-#   - Download the corresponding protein.info file separately, or
-#   - Work directly with protein IDs as nodes.
+echo "Downloading STRING protein-to-gene mapping table (v12.0)..."
+wget -nc -O "data/raw/protein.info.v12.0.txt.gz" \
+    "https://stringdb-downloads.org/download/protein.info.v12.0.txt.gz"
+
+echo "Uncompressing protein info mapping..."
+gunzip -f "data/raw/protein.info.v12.0.txt.gz" || true
+
+# The generic STRING links file uses protein IDs. The matching protein.info
+# table lets HyperPerturb align those IDs to gene symbols in adata.var_names.
 
 echo "Downloading FrangiehIzar2021 protein and RNA perturbation datasets (h5ad)..."
 
@@ -61,13 +67,13 @@ from hyperpreturb.utils.data_loader import load_protein_network, create_adjacenc
 # Load network with high confidence (score > 700)
 network_df = load_protein_network(
     string_path="data/raw/protein.links.v12.0.txt",
-    gene_mapping_path=None,
+    gene_mapping_path="data/raw/protein.info.v12.0.txt",
     confidence=700
 )
 
 print(f"Loaded {len(network_df)} high-confidence protein interactions")
 
-# Get an example set of genes
+# Get an example set of genes aligned to gene symbols
 example_genes = network_df['protein1_gene'].dropna().unique()[:1000]
 
 # Create adjacency matrix

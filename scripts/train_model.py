@@ -74,6 +74,8 @@ def main():
                         help="Path to the protein expression data (h5ad, optional)")
     parser.add_argument("--network_path", type=str, default=None,
                         help="Path to protein-protein interaction network (optional)")
+    parser.add_argument("--gene_mapping_path", type=str, default=None,
+                        help="Optional STRING protein-to-gene mapping file used to align network IDs with adata.var_names.")
     parser.add_argument("--output_dir", type=str, default="models/saved",
                         help="Directory to save the trained model")
     # Defaults tuned for ~10GB system RAM
@@ -100,11 +102,15 @@ def main():
     parser.add_argument("--debug", action="store_true",
                     help="Enable debug mode for the advanced trainer (constant LR, NaN checks).")
     parser.add_argument("--policy_only", action="store_true",
-                    help="Debug: train only the policy head (KL loss only).")
+                    help="Debug: train only the signed policy head.")
     parser.add_argument("--no_protein", action="store_true",
                     help="Debug: drop protein modality from adata.obsm if present.")
     parser.add_argument("--euclidean_baseline", action="store_true",
                     help="Debug: use Euclidean baseline model instead of hyperbolic graph convs.")
+    parser.add_argument("--perturbation_key", type=str, default="perturbation",
+                    help="adata.obs column containing perturbation labels.")
+    parser.add_argument("--control_value", type=str, default="non-targeting",
+                    help="Label in --perturbation_key that denotes control cells.")
     
     args = parser.parse_args()
     
@@ -132,8 +138,11 @@ def main():
         args.rna_path,
         args.protein_path if args.use_protein_data else None,
         args.network_path,
+        gene_mapping_path=args.gene_mapping_path,
         preprocessed_path=args.preprocessed_path,
         max_cells=args.max_cells,
+        ctrl_key=args.perturbation_key,
+        ctrl_value=args.control_value,
     )
     
     # Check if data was successfully loaded
@@ -262,6 +271,8 @@ def main():
             euclidean_baseline=args.euclidean_baseline,
             seed=args.seed,
             deterministic=True,
+            perturbation_key=args.perturbation_key,
+            control_value=args.control_value,
         )
         logger.info("Advanced training completed")
 

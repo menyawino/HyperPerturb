@@ -40,7 +40,8 @@ class HyperPerturbInference:
         try:
             self.model = tf.keras.models.load_model(
                 os.path.join(self.model_path, 'final_model.keras'),
-                custom_objects=custom_objects
+                custom_objects=custom_objects,
+                compile=False,
             )
         except (OSError, ValueError, TypeError) as e:
             raise ValueError(f"Failed to load model: {str(e)}")
@@ -90,7 +91,7 @@ class HyperPerturbInference:
         return top_k_indices.numpy()[0], top_k_values.numpy()[0], np.asarray(values)[0, :, 0]
     
     def interpret_perturbations(self, adata, top_k_indices, gene_names=None):
-        """Map perturbation indices back to gene names.
+        """Map perturbation indices back to gene names for each response gene.
 
         If ``gene_names`` is not provided, this first uses the saved model's
         gene_names from config.json and then falls back to ``adata.var_names``.
@@ -102,14 +103,15 @@ class HyperPerturbInference:
                 gene_names = adata.var_names
             else:
                 raise ValueError("Gene names not provided and not found in AnnData object")
+        gene_names = list(gene_names)
         
-        # Convert indices to gene names
+        # Each row corresponds to a response gene in gene space, not to an input cell.
         results = []
-        for i, cell_perturbations in enumerate(top_k_indices):
-            cell_genes = [gene_names[idx] for idx in cell_perturbations]
+        for i, gene_perturbations in enumerate(top_k_indices):
+            perturbation_genes = [gene_names[idx] for idx in gene_perturbations]
             results.append({
-                'cell_id': i,
-                'perturbation_genes': cell_genes
+                'response_gene': gene_names[i],
+                'perturbation_genes': perturbation_genes
             })
         
         return pd.DataFrame(results)
@@ -121,6 +123,12 @@ class HyperPerturbInference:
         This is a very rough approximation -- just multiplies expression by
         (1 - strength) at perturbation targets. Not a real biological simulation.
         """
+        if len(perturbation_indices) != expression_data.shape[0]:
+            raise ValueError(
+                "perturbation_indices must align with rows of expression_data. "
+                "Do not pass the gene-space output of predict_perturbations directly into simulate_perturbation_effect."
+            )
+
         # Create a copy of expression data to avoid modifying the original
         expression_trajectory = [expression_data.copy()]
         current_state = expression_data.copy()
@@ -148,9 +156,10 @@ class HyperPerturbInference:
         """UMAP/PCA visualization of original + perturbed expression states."""
         try:
             import anndata as ad
+            import scanpy as sc
             from scipy.sparse import issparse
         except ImportError:
-            raise ImportError("Please install anndata and scipy for visualization")
+            raise ImportError("Please install anndata, scanpy, and scipy for visualization")
         
         # Create a copy of the original AnnData
         adata_traj = ad.AnnData(

@@ -6,6 +6,57 @@ import tensorflow as tf
 import scipy.sparse as sp
 from pathlib import Path
 
+
+def _infer_gene_mapping_path(string_path):
+    path = Path(string_path)
+    candidates = []
+    if "protein.links" in path.name:
+        candidates.append(path.with_name(path.name.replace("protein.links", "protein.info")))
+    if ".links." in path.name:
+        candidates.append(path.with_name(path.name.replace(".links.", ".info.")))
+    candidates.extend(
+        [
+            path.with_name("protein.info.v12.0.txt"),
+            path.with_name("protein.info.v12.0.txt.gz"),
+            path.with_name("9606.protein.info.v12.0.txt"),
+            path.with_name("9606.protein.info.v12.0.txt.gz"),
+        ]
+    )
+
+    seen = set()
+    for candidate in candidates:
+        candidate_str = str(candidate)
+        if candidate_str in seen:
+            continue
+        seen.add(candidate_str)
+        if candidate.exists():
+            return candidate_str
+    return None
+
+
+def _load_gene_mapping(gene_mapping_path):
+    if not os.path.exists(gene_mapping_path):
+        raise FileNotFoundError(f"Gene mapping file not found: {gene_mapping_path}")
+
+    mapping_df = pd.read_csv(gene_mapping_path, sep="\t")
+    protein_column = next(
+        (column for column in ["protein_id", "protein_external_id", "#string_protein_id", "string_protein_id"] if column in mapping_df.columns),
+        None,
+    )
+    gene_column = next(
+        (column for column in ["gene_symbol", "preferred_name", "preferred_gene_name"] if column in mapping_df.columns),
+        None,
+    )
+
+    if protein_column is None or gene_column is None:
+        raise ValueError(
+            "Gene mapping file must contain a STRING protein identifier column and a gene symbol column. "
+            f"Available columns: {list(mapping_df.columns)}"
+        )
+
+    mapping_df = mapping_df[[protein_column, gene_column]].dropna()
+    return dict(zip(mapping_df[protein_column].astype(str), mapping_df[gene_column].astype(str)))
+
 def load_data(path, normalize=True, log_transform=True, highly_variable=3000):
     """Load h5ad and run basic preprocessing (normalize, log1p, HVG filter)."""
     adata = sc.read_h5ad(path)
@@ -27,15 +78,15 @@ def load_protein_network(string_path="data/raw/protein.links.v12.0.txt",
                          gene_mapping_path=None,
                          confidence=700):
     """Load STRING PPI network, filter by confidence score."""
-    network_df = pd.read_csv(string_path, sep=' ')
+    network_df = pd.read_csv(string_path, sep=r'\s+', engine='python')
     
     # Filter by confidence score
     network_df = network_df[network_df['combined_score'] > confidence]
     
     # Map protein IDs to gene symbols if mapping provided
-    if gene_mapping_path:
-        mapping_df = pd.read_csv(gene_mapping_path, sep='\t')
-        protein_to_gene = dict(zip(mapping_df['protein_id'], mapping_df['gene_symbol']))
+    resolved_mapping_path = gene_mapping_path or _infer_gene_mapping_path(string_path)
+    if resolved_mapping_path:
+        protein_to_gene = _load_gene_mapping(resolved_mapping_path)
         
         network_df['protein1_gene'] = network_df['protein1'].map(protein_to_gene)
         network_df['protein2_gene'] = network_df['protein2'].map(protein_to_gene)
@@ -67,6 +118,12 @@ def create_adjacency_matrix(network_df, gene_list, weighted=True):
                 weights.extend([weight, weight])
             else:
                 weights.extend([1.0, 1.0])
+
+    if not edges:
+        raise ValueError(
+            "No overlapping network edges were found for the provided gene list. "
+            "If the network uses STRING protein IDs, map them to gene symbols before building adjacency."
+        )
     
     # Create sparse adjacency matrix
     i, j = zip(*edges)

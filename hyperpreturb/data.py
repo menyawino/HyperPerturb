@@ -71,6 +71,9 @@ def preprocess_data(input_path, output_path=None, n_neighbors=15, n_pcs=20, max_
     sc.pp.filter_cells(adata, min_genes=200)
     sc.pp.filter_genes(adata, min_cells=3)
     sc.pp.normalize_total(adata, target_sum=1e4)
+    # Preserve normalized counts so downstream log fold-change targets are
+    # computed from expression, not z-scored features.
+    adata.layers['normalized_counts'] = adata.X.copy()
     sc.pp.log1p(adata)
 
     # 2000 HVGs — balance between signal and memory
@@ -118,38 +121,52 @@ def prepare_perturbation_data(adata, ctrl_key='perturbation', ctrl_value='non-ta
     print(f"Using '{ctrl_key}' column with control value '{ctrl_value}'")
     
     # Split data into control and perturbation groups
-    is_control = adata.obs[ctrl_key] == ctrl_value
+    is_control = (adata.obs[ctrl_key] == ctrl_value).to_numpy()
     
     if sum(is_control) == 0:
         raise ValueError(f"No control samples found with {ctrl_key}={ctrl_value}. Available values: {adata.obs[ctrl_key].unique()}")
     
     print(f"Found {sum(is_control)} control samples out of {adata.n_obs} total samples")
     
-    # Get control expression
-    control_cells = adata[is_control]
-    control_mean = control_cells.X.mean(axis=0)
-    
-    if sp.issparse(adata.X):
-        control_mean = control_mean.toarray().flatten()
-    
-    # Compute log fold changes for each cell compared to control mean
-    if sp.issparse(adata.X):
-        adata.obsm['log_fold_change'] = np.array(adata.X.toarray() - control_mean)
+    effect_source = adata.layers['normalized_counts'] if 'normalized_counts' in adata.layers else adata.X
+    if sp.issparse(effect_source):
+        effect_matrix = effect_source.toarray().astype(np.float32)
     else:
-        adata.obsm['log_fold_change'] = adata.X - control_mean
-    
-    if 'perturbation' not in adata.obs:
-        raise ValueError("Expected 'perturbation' column in adata.obs to build perturbation targets.")
+        effect_matrix = np.asarray(effect_source, dtype=np.float32)
 
-    # Create one-hot encoding of perturbation targets
-    perturbations = adata.obs['perturbation'].unique()
+    control_mean = np.mean(effect_matrix[is_control], axis=0).astype(np.float32)
+
+    if 'normalized_counts' in adata.layers:
+        adata.obsm['log_fold_change'] = np.log1p(effect_matrix) - np.log1p(control_mean[np.newaxis, :])
+    else:
+        # Fallback for already-materialized AnnData objects that do not carry
+        # normalized counts. This preserves backwards compatibility for tests
+        # and older preprocessed files.
+        adata.obsm['log_fold_change'] = effect_matrix - control_mean
+    
+    perturbation_column = 'perturbation' if 'perturbation' in adata.obs else ctrl_key
+    if perturbation_column not in adata.obs:
+        raise ValueError(
+            "Expected a perturbation annotation column in adata.obs to build perturbation targets. "
+            f"Tried 'perturbation' and '{ctrl_key}'."
+        )
+
+    # Create one-hot encoding only for non-control perturbations; control cells
+    # remain all-zero rows instead of being treated as an intervention class.
+    perturbations = [pert for pert in adata.obs[perturbation_column].unique() if pert != ctrl_value]
+    if not perturbations:
+        raise ValueError(
+            f"No non-control perturbations found in adata.obs['{perturbation_column}'] after excluding '{ctrl_value}'."
+        )
     pert_dict = {pert: i for i, pert in enumerate(perturbations)}
 
     one_hot = np.zeros((adata.n_obs, len(perturbations)), dtype=np.float32)
-    for i, pert in enumerate(adata.obs['perturbation']):
-        one_hot[i, pert_dict[pert]] = 1.0
+    for i, pert in enumerate(adata.obs[perturbation_column]):
+        if pert != ctrl_value:
+            one_hot[i, pert_dict[pert]] = 1.0
 
     adata.obsm['perturbation_target'] = one_hot
+    adata.uns['perturbation_target_names'] = [str(pert) for pert in perturbations]
     
     return adata
 
@@ -157,8 +174,11 @@ def load_and_preprocess_perturbation_data(
     rna_path,
     protein_path=None,
     network_path=None,
+    gene_mapping_path=None,
     preprocessed_path=None,
     max_cells=3000,
+    ctrl_key='perturbation',
+    ctrl_value='non-targeting',
 ):
     """
     Load and preprocess perturbation data with optional protein data and PPI network.
@@ -167,6 +187,9 @@ def load_and_preprocess_perturbation_data(
         rna_path: Path to RNA expression data (h5ad)
         protein_path: Path to protein expression data (h5ad, optional)
         network_path: Path to protein-protein interaction network (optional)
+        gene_mapping_path: Optional STRING protein-to-gene mapping file
+        ctrl_key: Column in adata.obs used to identify control cells
+        ctrl_value: Value in ctrl_key that denotes control cells
         
     Returns:
         Tuple of (processed RNA data, adjacency matrix)
@@ -174,45 +197,43 @@ def load_and_preprocess_perturbation_data(
     import os
     from pathlib import Path
     
-    # Fast path: load preprocessed AnnData if provided
-    if preprocessed_path is not None and os.path.exists(preprocessed_path):
-        print(f"Loading preprocessed perturbation data from {preprocessed_path}")
-        rna_adata = sc.read_h5ad(preprocessed_path)
-        adj_matrix = None
-        return rna_adata, adj_matrix
-
-    if rna_path is None:
-        raise ValueError("rna_path must be provided explicitly.")
-    if not os.path.exists(rna_path):
-        raise FileNotFoundError(f"RNA data file not found at {rna_path}")
-
     if protein_path is not None and not os.path.exists(protein_path):
         raise FileNotFoundError(f"Protein data file not found at {protein_path}")
 
     if network_path is not None and not os.path.exists(network_path):
         raise FileNotFoundError(f"Protein network file not found at {network_path}")
-    
-    # Load RNA data
-    print(f"Loading RNA data from {rna_path}")
-    rna_adata = sc.read_h5ad(rna_path)
-    
-    # Preprocess RNA data
-    rna_adata = preprocess_data(rna_adata, max_cells=max_cells)
-    
-    # Prepare perturbation data
-    rna_adata = prepare_perturbation_data(rna_adata)
 
-    # Optionally save fully processed AnnData for reproducible reruns.
-    if preprocessed_path is not None:
-        os.makedirs(os.path.dirname(preprocessed_path), exist_ok=True)
-        rna_adata.write(preprocessed_path)
-        print(f"Saved preprocessed perturbation data to {preprocessed_path}")
+    if preprocessed_path is not None and os.path.exists(preprocessed_path):
+        print(f"Loading preprocessed perturbation data from {preprocessed_path}")
+        rna_adata = sc.read_h5ad(preprocessed_path)
+        rna_adata = prepare_perturbation_data(rna_adata, ctrl_key=ctrl_key, ctrl_value=ctrl_value)
+    else:
+        if rna_path is None:
+            raise ValueError("rna_path must be provided explicitly.")
+        if not os.path.exists(rna_path):
+            raise FileNotFoundError(f"RNA data file not found at {rna_path}")
+
+        # Load RNA data
+        print(f"Loading RNA data from {rna_path}")
+        rna_adata = sc.read_h5ad(rna_path)
+        
+        # Preprocess RNA data
+        rna_adata = preprocess_data(rna_adata, max_cells=max_cells)
+        
+        # Prepare perturbation data
+        rna_adata = prepare_perturbation_data(rna_adata, ctrl_key=ctrl_key, ctrl_value=ctrl_value)
+
+        # Optionally save fully processed AnnData for reproducible reruns.
+        if preprocessed_path is not None:
+            os.makedirs(os.path.dirname(preprocessed_path), exist_ok=True)
+            rna_adata.write(preprocessed_path)
+            print(f"Saved preprocessed perturbation data to {preprocessed_path}")
     
     # Compute adjacency matrix from PPI network if provided
     adj_matrix = None
     if network_path is not None:
         print(f"Loading protein network from {network_path}")
-        network_df = load_protein_network(network_path)
+        network_df = load_protein_network(network_path, gene_mapping_path=gene_mapping_path)
         gene_list = rna_adata.var_names.tolist()
         adj_matrix = create_adjacency_matrix(network_df, gene_list)
     

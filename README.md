@@ -4,7 +4,7 @@ Strict, fail-fast perturbation response modeling with graph-aware hyperbolic dee
 
 Gene regulatory networks are hierarchical — a handful of master regulators sit upstream, and targets fan out in tree-like structures below them. Euclidean embeddings need many dimensions to represent trees without distorting distances. Hyperbolic space (Poincaré ball model) grows exponentially with radius, so it can embed hierarchies more compactly. That's the core idea behind this project.
 
-HyperPerturb takes single-cell CRISPR perturbation data (Perturb-seq screens), embeds genes in the Poincaré ball via graph convolutions over a PPI network, and learns to predict which perturbations most strongly affect which genes. It outputs two things per gene: a distribution over perturbations (policy head) and a scalar sensitivity score (value head).
+HyperPerturb takes single-cell CRISPR perturbation data (Perturb-seq screens), embeds genes in the Poincaré ball via graph convolutions over a PPI network, and learns to predict which perturbations most strongly affect which genes. In the current advanced trainer it outputs two things per gene: signed effect scores over perturbation genes (policy head) and a scalar sensitivity score (value head).
 
 HyperPerturb is designed as a scientific-computing pipeline with explicit contracts:
 
@@ -18,7 +18,7 @@ HyperPerturb is designed as a scientific-computing pipeline with explicit contra
 - Poincaré ball manifold operations (exp map, log map, Möbius addition, geodesic distance)
 - Riemannian Adam — converts Euclidean gradients to Riemannian ones before the Adam step
 - Graph convolution layers that project through hyperbolic exp/log maps
-- Dual-head graph model: **policy head** (per-gene perturbation impact distribution) + **value head** (per-gene sensitivity)
+- Dual-head graph model: **policy head** (signed gene-space perturbation effects) + **value head** (per-gene sensitivity)
 - Cosine-exponential LR decay schedule
 - L2 weight regularization
 - Deterministic seeding controls for reproducible runs
@@ -66,11 +66,11 @@ We use the Frangieh & Izar (2021) CRISPR perturbation dataset.
 bash scripts/download_string_and_test_data.sh
 ```
 
-This downloads RNA + protein `.h5ad` files and the STRING PPI network into `data/raw/`.
+This downloads RNA + protein `.h5ad` files, the STRING PPI network, and the matching STRING protein-info mapping table into `data/raw/`.
 
 ### Preprocessing
 
-Preprocessing subsamples to 3000 cells by default (tuned for ~10 GB RAM machines), selects 2000 highly variable genes, runs PCA, and computes log fold-changes relative to control cells.
+Preprocessing subsamples to 3000 cells by default (tuned for ~10 GB RAM machines), selects 2000 highly variable genes, runs PCA, and computes per-cell signed log fold-changes relative to control cells from normalized counts before scaling.
 
 ```python
 from hyperpreturb.data import preprocess_data, prepare_perturbation_data
@@ -88,11 +88,13 @@ Control handling is strict: by default `prepare_perturbation_data` expects `ctrl
 ```bash
 python scripts/train_model.py \
     --rna_path data/raw/FrangiehIzar2021_RNA.h5ad \
-    --network_path data/raw/protein.links.v12.0.txt
+    --network_path data/raw/protein.links.v12.0.txt \
+    --gene_mapping_path data/raw/protein.info.v12.0.txt
 ```
 
-This runs the advanced trainer with defaults: 30 epochs, batch size 16, LR 1e-5, curvature 1.0, seed 42.
+This runs the advanced trainer with defaults: 30 epochs, requested batch size 16, LR 1e-5, curvature 1.0, seed 42.
 The CLI is fail-fast and requires explicit paths (no implicit data-path fallback).
+The advanced trainer still operates on one full gene graph per step, so its effective batch size is 1.
 
 ### Python API
 
@@ -103,6 +105,7 @@ from hyperpreturb.models.train import train_model
 adata, adj_matrix = load_and_preprocess_perturbation_data(
     "data/raw/FrangiehIzar2021_RNA.h5ad",
     network_path="data/raw/protein.links.v12.0.txt",
+    gene_mapping_path="data/raw/protein.info.v12.0.txt",
 )
 
 model, history = train_model(
@@ -121,7 +124,8 @@ model, history = train_model(
 |------|---------|-------|
 | `--trainer` | `advanced` | `simple` uses plain Keras MSE regression |
 | `--epochs` | `30` | |
-| `--batch_size` | `16` | |
+| `--batch_size` | `16` | Advanced trainer logs this request but trains one full graph per step |
+| `--gene_mapping_path` | `None` | STRING protein-to-gene mapping file; required when network IDs are not already gene symbols |
 | `--learning_rate` | `1e-5` | Higher values cause NaN divergence |
 | `--curvature` | `1.0` | Poincaré ball curvature |
 | `--seed` | `42` | Global random seed for deterministic setup |
@@ -138,7 +142,10 @@ from hyperpreturb.utils.data_loader import load_protein_network, create_adjacenc
 inference = HyperPerturbInference("models/saved/hyperperturb-20250413-123456")
 
 gene_list = list(test_gene_names)
-network_df = load_protein_network("data/raw/protein.links.v12.0.txt")
+network_df = load_protein_network(
+    "data/raw/protein.links.v12.0.txt",
+    gene_mapping_path="data/raw/protein.info.v12.0.txt",
+)
 adj_matrix = create_adjacency_matrix(network_df, gene_list)
 
 top_k_indices, scores, values = inference.predict_perturbations(
@@ -146,6 +153,9 @@ top_k_indices, scores, values = inference.predict_perturbations(
     adj_matrix=adj_matrix,
     k=5,
 )
+
+# Each row in top_k_indices corresponds to a response gene, not an input cell.
+ranked_gene_pairs = inference.interpret_perturbations(None, top_k_indices, gene_names=gene_list)
 ```
 
 ## Project layout
@@ -166,7 +176,7 @@ hyperpreturb/
 
 ## Scope and limitations
 
-- **Directionality not modeled in policy target**: policy supervision is based on magnitude `|log fold-change|`.
+- **Directionality now modeled in advanced trainer**: policy supervision uses signed log fold-change with masked gene-space targets and held-out perturbation evaluation.
 - **Benchmarking not included in this repository**: GEARS/CPA/scGEN comparisons are out of scope for the current codebase.
 - **Dataset coverage**: primary workflow is built around Frangieh & Izar (2021)-style perturbation screens.
 - **Improvement roadmap**: see [ROADMAP.md](ROADMAP.md) for the prioritized scientific and engineering backlog.
