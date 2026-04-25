@@ -1,165 +1,112 @@
 import argparse
+import json
 import os
-from pathlib import Path
 
 import numpy as np
 import scanpy as sc
 import tensorflow as tf
 
-from hyperpreturb.models import HyperPerturbModel
-from hyperpreturb.models.train import PerturbationEnv
+from hyperpreturb.models import HyperPerturbModel, SignedHyperPerturbModel
+from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
+from hyperpreturb.models.training_utils import (
+    DEFAULT_CONTROL_VALUE,
+    DEFAULT_PERTURBATION_KEY,
+    build_graph_inputs,
+    build_signed_effect_targets,
+    compute_masked_policy_metrics,
+    split_anndata_by_perturbation,
+)
+from hyperpreturb.utils.data_loader import create_adjacency_matrix, load_protein_network
+from hyperpreturb.utils.manifolds import PoincareBall
 
 
-def build_graph_inputs(adata, adj_matrix=None):
-    """Rebuild graph-level inputs (gene features, adjacency) from AnnData.
-
-    This mirrors the logic in `hyperpreturb.models.train.train_model` so
-    evaluation uses exactly the same representation as training.
-    """
-    n_genes = adata.n_vars
-
-    # Expression matrix: cells × genes
-    if hasattr(adata.X, "toarray"):
-        X_dense = adata.X.toarray().astype("float32")
-    else:
-        X_dense = np.asarray(adata.X, dtype="float32")
-
-    # Per-gene features via mean expression over cells
-    gene_features = np.mean(X_dense, axis=0, keepdims=False).astype("float32")  # (n_genes,)
-    gene_features = gene_features[:, np.newaxis]  # (n_genes, 1)
-
-    # Adjacency
-    if adj_matrix is None:
-        adj_matrix = tf.eye(n_genes, n_genes, dtype=tf.float32)
-    else:
-        if isinstance(adj_matrix, tf.SparseTensor):
-            adj_matrix = tf.sparse.to_dense(adj_matrix)
-        adj_matrix = tf.cast(adj_matrix, tf.float32)
-
-    # Add batch dimension
-    x_gene = gene_features[np.newaxis, ...]          # (1, n_genes, 1)
-    x_adj = adj_matrix[np.newaxis, ...]             # (1, n_genes, n_genes)
-
-    return x_gene, x_adj
-
-
-def build_targets(adata):
-    """Rebuild policy and value targets from AnnData for evaluation.
-
-    Uses the same logic as in `train_model` for computing
-    `per_gene_pert_reward`, then derives:
-      - policy target: per_gene_pert_dist (n_genes, n_perts)
-      - value target: per_gene_value (n_genes, 1)
-    """
-    env = PerturbationEnv(adata)
-    targets = env.targets
-    if hasattr(targets, "toarray"):
-        targets = targets.toarray()
-    targets = np.asarray(targets, dtype="float32")  # (n_cells, n_perts)
-
-    # log fold-change: (n_cells, n_genes)
-    if "log_fold_change" not in adata.obsm:
-        raise ValueError("Expected 'log_fold_change' in adata.obsm for per-gene rewards.")
-
-    lfc = adata.obsm["log_fold_change"]
-    if hasattr(lfc, "toarray"):
-        lfc = lfc.toarray()
-    lfc = np.asarray(lfc, dtype="float32")  # (n_cells, n_genes)
-
-    n_cells, n_perts = targets.shape
-    _, n_genes = lfc.shape
-
-    per_pert_gene_reward = np.zeros((n_perts, n_genes), dtype="float32")
-    for p in range(n_perts):
-        mask = targets[:, p] > 0.5
-        if np.any(mask):
-            per_pert_gene_reward[p] = np.mean(np.abs(lfc[mask]), axis=0)
-        else:
-            per_pert_gene_reward[p] = 0.0
-
-    per_gene_pert_reward = per_pert_gene_reward.T  # (n_genes, n_perts)
-
-    # Policy target: we mirror the smoothed/temperature-scaled distribution
-    sum_per_gene = np.sum(per_gene_pert_reward, axis=-1, keepdims=True)
-    sum_per_gene = np.where(sum_per_gene == 0.0, 1.0, sum_per_gene)
-
-    temperature = 0.7
-    logits = per_gene_pert_reward / max(temperature, 1e-6)
-    logits = logits - np.max(logits, axis=-1, keepdims=True)
-    exp_logits = np.exp(logits)
-    exp_sum = np.sum(exp_logits, axis=-1, keepdims=True)
-    exp_sum = np.where(exp_sum == 0.0, 1.0, exp_sum)
-    softmax_dist = exp_logits / exp_sum
-
-    smoothing = 0.05
-    uniform = np.full_like(softmax_dist, 1.0 / n_perts)
-    per_gene_pert_dist = (1.0 - smoothing) * softmax_dist + smoothing * uniform
-
-    # Value target: mean reward per gene
-    per_gene_value = np.mean(per_gene_pert_reward, axis=-1, keepdims=True)  # (n_genes, 1)
-
-    return per_gene_pert_dist, per_gene_value
-
-
-def evaluate(model_path, preprocessed_path):
-    """Evaluate a saved HyperPerturbModel on held-out cells.
-
-    We use a simple cell-wise split (80/20) to recompute targets, then
-    compare model predictions against targets derived from the *full*
-    dataset. This gives a coarse sense of how well the learned policy and
-    value heads match the aggregated perturbation effects.
-    """
+def _resolve_model_dir(model_path):
     if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model file not found: {model_path}")
+        raise FileNotFoundError(f"Model path not found: {model_path}")
+    if os.path.isdir(model_path):
+        return model_path, os.path.join(model_path, "final_model.keras")
+    if model_path.endswith(".keras"):
+        return os.path.dirname(model_path), model_path
+    raise ValueError("model_path must be a model directory or a final_model.keras file")
 
+
+def _load_model_and_config(model_path):
+    model_dir, keras_path = _resolve_model_dir(model_path)
+    config_path = os.path.join(model_dir, "config.json")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+    with open(config_path, "r", encoding="utf-8") as handle:
+        config = json.load(handle)
+
+    custom_objects = {
+        "PoincareBall": PoincareBall,
+        "HyperbolicAdam": HyperbolicAdam,
+        "QuantumAnnealer": QuantumAnnealer,
+        "HyperPerturbModel": HyperPerturbModel,
+        "SignedHyperPerturbModel": SignedHyperPerturbModel,
+    }
+    model = tf.keras.models.load_model(keras_path, custom_objects=custom_objects, compile=False)
+    return model_dir, model, config
+
+
+def _build_adjacency(adata, network_path=None):
+    if network_path is None:
+        return None
+    network_df = load_protein_network(network_path)
+    return create_adjacency_matrix(network_df, adata.var_names.tolist())
+
+
+def evaluate(model_path, preprocessed_path, network_path=None):
+    """Evaluate a trained model on held-out perturbation conditions."""
     if not os.path.exists(preprocessed_path):
         raise FileNotFoundError(f"Preprocessed data not found: {preprocessed_path}")
 
+    _, model, config = _load_model_and_config(model_path)
     adata = sc.read_h5ad(preprocessed_path)
 
-    # Build graph inputs and targets for evaluation
-    x_gene, x_adj = build_graph_inputs(adata, adj_matrix=None)
-    policy_target, value_target = build_targets(adata)
+    perturbation_key = config.get("perturbation_key", DEFAULT_PERTURBATION_KEY)
+    control_value = config.get("control_value", DEFAULT_CONTROL_VALUE)
+    validation_split = float(config.get("validation_split", 0.0))
+    seed = int(config.get("seed", 42))
 
-    # Add batch dimension to targets
-    policy_target = policy_target[np.newaxis, ...]  # (1, n_genes, n_perts)
-    value_target = value_target[np.newaxis, ...]    # (1, n_genes, 1)
+    _, validation_adata, split_metadata = split_anndata_by_perturbation(
+        adata,
+        validation_split=validation_split,
+        perturbation_key=perturbation_key,
+        control_value=control_value,
+        seed=seed,
+    )
+    if validation_adata is None:
+        raise ValueError("No held-out perturbation split is available for this model configuration.")
 
-    # Load model
-    model = tf.keras.models.load_model(model_path, compile=False)
+    adj_matrix = _build_adjacency(validation_adata, network_path=network_path)
+    x_gene, x_adj = build_graph_inputs(validation_adata, adj_matrix=adj_matrix)
+    policy_target, value_target, _ = build_signed_effect_targets(
+        validation_adata,
+        supervised_perturbations=split_metadata["validation_perturbations"],
+        perturbation_key=perturbation_key,
+        control_value=control_value,
+    )
 
-    # Forward pass
     preds = model([x_gene, x_adj], training=False)
-    if isinstance(preds, (list, tuple)) and len(preds) == 2:
-        policy_pred, value_pred = preds
-    else:
-        raise ValueError("Expected model to output (policy, value) tuple.")
+    if not isinstance(preds, (list, tuple)) or len(preds) != 2:
+        raise ValueError("Expected model to output a (policy, value) tuple.")
 
-    # Compute simple metrics
-    # Policy: KL and MAE w.r.t. target distribution
-    policy_pred = np.asarray(policy_pred)
-    value_pred = np.asarray(value_pred)
+    policy_pred = np.asarray(preds[0], dtype="float32")
+    value_pred = np.asarray(preds[1], dtype="float32")
 
-    eps = 1e-8
-    policy_pred_clip = np.clip(policy_pred, eps, 1.0)
-    policy_pred_clip /= np.sum(policy_pred_clip, axis=-1, keepdims=True)
-
-    kl = np.sum(
-        policy_target * (np.log(policy_target + eps) - np.log(policy_pred_clip + eps)),
-        axis=-1,
-    )  # (1, n_genes)
-    policy_kl_mean = float(np.mean(kl))
-    policy_mae = float(np.mean(np.abs(policy_pred - policy_target)))
-
-    # Value: MSE and MAE
+    policy_metrics = compute_masked_policy_metrics(policy_target, policy_pred)
     value_mse = float(np.mean((value_pred - value_target) ** 2))
     value_mae = float(np.mean(np.abs(value_pred - value_target)))
 
-    print("Evaluation metrics:")
-    print(f"  Policy KL (mean over genes): {policy_kl_mean:.4f}")
-    print(f"  Policy MAE:                 {policy_mae:.6f}")
-    print(f"  Value MSE:                  {value_mse:.4f}")
-    print(f"  Value MAE:                  {value_mae:.4f}")
+    print("Evaluation metrics (held-out perturbations):")
+    print(f"  Validation perturbations:   {', '.join(split_metadata['validation_perturbations'])}")
+    print(f"  Policy Huber:              {policy_metrics['policy_huber']:.6f}")
+    print(f"  Policy MAE:                {policy_metrics['policy_mae']:.6f}")
+    print(f"  Policy Sign Accuracy:      {policy_metrics['policy_sign_accuracy']:.4f}")
+    print(f"  Value MSE:                 {value_mse:.6f}")
+    print(f"  Value MAE:                 {value_mae:.6f}")
 
 
 def main():
@@ -168,17 +115,23 @@ def main():
         "--model_path",
         type=str,
         required=True,
-        help="Path to the saved Keras model (.keras)",
+        help="Path to the saved model directory or final_model.keras file.",
     )
     parser.add_argument(
         "--preprocessed_path",
         type=str,
         required=True,
-        help="Path to the preprocessed AnnData file used for training",
+        help="Path to the preprocessed AnnData file used for training.",
+    )
+    parser.add_argument(
+        "--network_path",
+        type=str,
+        default=None,
+        help="Optional STRING network path used to rebuild the training adjacency.",
     )
 
     args = parser.parse_args()
-    evaluate(args.model_path, args.preprocessed_path)
+    evaluate(args.model_path, args.preprocessed_path, network_path=args.network_path)
 
 
 if __name__ == "__main__":

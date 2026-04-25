@@ -1,21 +1,29 @@
-import tensorflow as tf
-import numpy as np
-import scipy.sparse as sp
-import os
-import logging
 import json
+import logging
+import os
 import random
 from datetime import datetime
-from pathlib import Path
 
-from hyperpreturb.models import HyperPerturbModel
-from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer  # QuantumAnnealer is now CosineExponentialDecay
+import numpy as np
+import tensorflow as tf
+
+from hyperpreturb.models import SignedHyperPerturbModel
+from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
+from hyperpreturb.models.training_utils import (
+    DEFAULT_CONTROL_VALUE,
+    DEFAULT_PERTURBATION_KEY,
+    build_graph_inputs,
+    build_signed_effect_targets,
+    masked_signed_huber_loss,
+    masked_signed_mae,
+    split_anndata_by_perturbation,
+)
 from hyperpreturb.utils.manifolds import PoincareBall
 
-# Configure logging
+
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
@@ -31,6 +39,7 @@ def safe_kl_divergence(eps=1e-6, name="policy_kld"):
 
     return loss_fn
 
+
 class ComplexityScheduler(tf.keras.callbacks.Callback):
     """Periodically bump the PerturbationEnv complexity (curriculum learning)."""
 
@@ -39,21 +48,16 @@ class ComplexityScheduler(tf.keras.callbacks.Callback):
         self.env = env
         self.factor = factor
         self.frequency = frequency
-        
+
     def on_epoch_end(self, epoch, logs=None):
         if epoch > 0 and epoch % self.frequency == 0:
-            logger.info(f"Epoch {epoch}: bumping complexity by {self.factor}x")
+            logger.info("Epoch %s: bumping complexity by %.2fx", epoch, self.factor)
             self.env.increase_complexity(self.factor)
 
 
 class PerturbationEnv:
-    """Wraps AnnData for perturbation targets and a simple complexity dial.
+    """Wraps AnnData for perturbation targets and a simple complexity dial."""
 
-    Despite the RL-ish interface (step/reset), this is really just a data
-    holder for the supervised training loop. The step() method isn't called
-    during actual training.
-    """
-    
     def __init__(self, adata, complexity=1.0):
         self.adata = adata
         self.current_state = None
@@ -64,84 +68,142 @@ class PerturbationEnv:
 
     def _prepare_targets(self):
         """Build one-hot perturbation labels from adata.obs['perturbation']."""
-        # If perturbation annotations exist in the data
-        if 'perturbation' in self.adata.obs:
-            # Create one-hot encoding of perturbations
-            perturbations = self.adata.obs['perturbation'].unique()
+        if "perturbation" in self.adata.obs:
+            perturbations = self.adata.obs["perturbation"].unique()
             pert_dict = {pert: i for i, pert in enumerate(perturbations)}
-            
+
             self.targets = np.zeros((self.adata.n_obs, len(perturbations)))
-            for i, pert in enumerate(self.adata.obs['perturbation']):
+            for i, pert in enumerate(self.adata.obs["perturbation"]):
                 self.targets[i, pert_dict[pert]] = 1
         else:
-            # Use expression values directly as targets
             self.targets = self.adata.X.copy()
-    
+
     def _reset(self):
         """Reset the environment to initial state."""
         self.current_state = tf.zeros(self.adata.n_vars)
         return self.current_state
-    
+
     def step(self, action):
         """RL-style step (not used in actual training, kept for API compat)."""
         if len(action.shape) > 1 and action.shape[1] > 1:
             action = tf.argmax(action, axis=1)
         action_np = np.asarray(action)
-        
-        # Apply perturbation effect based on action
-        if hasattr(self.adata.X, 'toarray'):
-            X = self.adata.X.toarray()
+
+        if hasattr(self.adata.X, "toarray"):
+            expression = self.adata.X.toarray()
         else:
-            X = self.adata.X
-        
-        # Simulate perturbation effect
+            expression = self.adata.X
+
         perturb_effect = np.zeros_like(self.current_state)
-        for i, gene_idx in enumerate(action_np):
-            # Apply stronger perturbation based on complexity
-            perturb_effect += self.complexity * X[:, gene_idx].mean()
-        
+        for gene_idx in action_np:
+            perturb_effect += self.complexity * expression[:, gene_idx].mean()
+
         self.current_state = perturb_effect
-        
-        # Calculate reward based on perturbation effect
         reward = tf.reduce_mean(perturb_effect)
-        
         return self.current_state, reward, False, {}
 
     def increase_complexity(self, factor=1.2):
         """Increase the complexity of the environment."""
         self.complexity *= factor
-        logger.info(f"Environment complexity increased to {self.complexity}")
+        logger.info("Environment complexity increased to %s", self.complexity)
 
-# ----------------------------
-# Full Training Pipeline (Graph-based HyperPerturbModel)
-# ----------------------------
-def train_model(adata, adj_matrix=None, model_dir="models/saved",
-                epochs=200, batch_size=128, learning_rate=1e-5,
-                curvature=1.0, validation_split=0.1,
-                debug=False, policy_only=False, euclidean_baseline=False,
-                seed=42, deterministic=True):
-    """Train the HyperPerturbModel on a gene graph.
 
-    Builds per-gene policy targets (which perturbations impact each gene)
-    and value targets (overall gene sensitivity), then fits the dual-head
-    graph model. Returns (model, history).
+def train_model(
+    adata,
+    adj_matrix=None,
+    model_dir="models/saved",
+    epochs=200,
+    batch_size=128,
+    learning_rate=1e-5,
+    curvature=1.0,
+    validation_split=0.1,
+    debug=False,
+    policy_only=False,
+    euclidean_baseline=False,
+    seed=42,
+    deterministic=True,
+    perturbation_key=DEFAULT_PERTURBATION_KEY,
+    control_value=DEFAULT_CONTROL_VALUE,
+):
+    """Train the advanced graph model with held-out perturbation validation.
 
-    WARNING: training frequently diverges to NaN. Use debug=True for
-    constant LR + NaN monitoring if you're diagnosing stability issues.
+    The policy head predicts signed log fold-change in gene space. Columns are
+    masked so that train and validation can supervise different perturbation
+    conditions without changing the output dimensionality.
     """
-    # Configure reproducible execution before creating model state.
     random.seed(seed)
     np.random.seed(seed)
     tf.keras.utils.set_random_seed(seed)
     if deterministic:
         tf.config.experimental.enable_op_determinism()
 
-    # Create timestamp for model directory
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     model_path = os.path.join(model_dir, f"hyperperturb-{timestamp}")
     os.makedirs(model_path, exist_ok=True)
-    
-    # Save training configuration
+
+    env = PerturbationEnv(adata)
+    curriculum = ComplexityScheduler(env)
+
+    n_genes = adata.n_vars
+    if adj_matrix is None:
+        raise ValueError("adj_matrix is required for graph training and cannot be None.")
+
+    train_adata, validation_adata, split_metadata = split_anndata_by_perturbation(
+        adata,
+        validation_split=validation_split,
+        perturbation_key=perturbation_key,
+        control_value=control_value,
+        seed=seed,
+    )
+
+    x_gene, x_adj = build_graph_inputs(train_adata, adj_matrix=adj_matrix)
+    logger.info(
+        "Gene features stats - min: %.4f, max: %.4f, mean: %.4f",
+        float(np.min(x_gene)),
+        float(np.max(x_gene)),
+        float(np.mean(x_gene)),
+    )
+    logger.info(
+        "Adjacency stats - min: %.4f, max: %.4f, mean: %.4f",
+        float(tf.reduce_min(x_adj).numpy()),
+        float(tf.reduce_max(x_adj).numpy()),
+        float(tf.reduce_mean(x_adj).numpy()),
+    )
+
+    graph_policy_target, graph_value_target, target_metadata = build_signed_effect_targets(
+        train_adata,
+        supervised_perturbations=split_metadata["train_perturbations"],
+        perturbation_key=perturbation_key,
+        control_value=control_value,
+    )
+    train_effects = graph_policy_target[..., :n_genes]
+    logger.info(
+        "Policy target stats - min: %.6f, max: %.6f, mean: %.6f",
+        float(np.min(train_effects)),
+        float(np.max(train_effects)),
+        float(np.mean(train_effects)),
+    )
+    logger.info(
+        "Value target stats - min: %.6f, max: %.6f, mean: %.6f",
+        float(np.min(graph_value_target)),
+        float(np.max(graph_value_target)),
+        float(np.mean(graph_value_target)),
+    )
+
+    y_targets = [graph_policy_target, graph_value_target]
+
+    validation_data = None
+    if validation_adata is not None:
+        val_x_gene, val_x_adj = build_graph_inputs(validation_adata, adj_matrix=adj_matrix)
+        val_policy_target, val_value_target, _ = build_signed_effect_targets(
+            validation_adata,
+            supervised_perturbations=split_metadata["validation_perturbations"],
+            perturbation_key=perturbation_key,
+            control_value=control_value,
+        )
+        val_targets = val_policy_target if policy_only else [val_policy_target, val_value_target]
+        validation_data = ([val_x_gene, val_x_adj], val_targets)
+
     config = {
         "epochs": epochs,
         "batch_size": batch_size,
@@ -152,171 +214,33 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
         "deterministic": deterministic,
         "n_genes": adata.n_vars,
         "n_cells": adata.n_obs,
+        "policy_target": "signed_log_fold_change",
+        "policy_target_space": "gene_space",
+        "split_strategy": split_metadata["split_strategy"],
+        "perturbation_key": perturbation_key,
+        "control_value": control_value,
+        "train_perturbations": split_metadata["train_perturbations"],
+        "validation_perturbations": split_metadata["validation_perturbations"],
+        "train_cells": int(train_adata.n_obs),
+        "validation_cells": int(validation_adata.n_obs if validation_adata is not None else 0),
+        "gene_names": [str(name) for name in adata.var_names.tolist()],
+        "supervised_train_columns": target_metadata["perturbation_indices"],
     }
-    with open(os.path.join(model_path, "config.json"), "w") as f:
-        json.dump(config, f, indent=2)
-    
-    # Set up environment and curriculum learning (defines perturbation labels per cell)
-    env = PerturbationEnv(adata)
-    curriculum = ComplexityScheduler(env)
+    with open(os.path.join(model_path, "config.json"), "w", encoding="utf-8") as handle:
+        json.dump(config, handle, indent=2)
+    with open(os.path.join(model_path, "split_metadata.json"), "w", encoding="utf-8") as handle:
+        json.dump(split_metadata, handle, indent=2)
 
-    # ------------------------
-    # Build graph inputs
-    # Nodes = genes, adjacency = gene-gene graph
-    # ------------------------
-    n_genes = adata.n_vars
-
-    if adj_matrix is None:
-        raise ValueError("adj_matrix is required for graph training and cannot be None.")
-
-    # Ensure dense float32 (no extra batch dim)
-    if isinstance(adj_matrix, tf.SparseTensor):
-        adj_matrix = tf.sparse.to_dense(adj_matrix)
-    adj_matrix = tf.cast(adj_matrix, tf.float32)
-
-    if adj_matrix.shape.rank != 2:
-        raise ValueError(f"adj_matrix must be rank-2, got rank {adj_matrix.shape.rank}")
-    if adj_matrix.shape[0] != n_genes or adj_matrix.shape[1] != n_genes:
-        raise ValueError(
-            f"adj_matrix shape must be ({n_genes}, {n_genes}), got {adj_matrix.shape}"
-        )
-
-    # Expression matrix: cells × genes
-    if hasattr(adata.X, "toarray"):
-        X_dense = adata.X.toarray().astype("float32")
-    else:
-        X_dense = np.asarray(adata.X, dtype="float32")
-
-    # Per-gene features via mean expression over cells
-    # Result shape: (n_genes, 1); batch dimension will be handled by Keras
-    gene_features = np.mean(X_dense, axis=0, keepdims=False).astype("float32")  # (n_genes,)
-    gene_features = gene_features[:, np.newaxis]  # (n_genes, 1)
-
-    # Sanity logging for inputs
-    logger.info(
-        "Gene features stats - min: %.4f, max: %.4f, mean: %.4f",
-        float(gene_features.min()),
-        float(gene_features.max()),
-        float(gene_features.mean()),
-    )
-    logger.info(
-        "Adjacency stats - min: %.4f, max: %.4f, mean: %.4f",
-        float(tf.reduce_min(adj_matrix).numpy()),
-        float(tf.reduce_max(adj_matrix).numpy()),
-        float(tf.reduce_mean(adj_matrix).numpy()),
-    )
-
-    # ------------------------
-    # Graph-level targets: per-gene × per-perturbation rewards (Option 2)
-    # ------------------------
-    # env.targets: (n_cells, n_perts) one-hot or similar
-    targets = env.targets
-    if targets is None:
-        raise ValueError("PerturbationEnv targets were not initialized.")
-    if isinstance(targets, sp.spmatrix):
-        targets = np.asarray(targets.todense(), dtype="float32")
-    else:
-        targets = np.asarray(targets, dtype="float32")  # (n_cells, n_perts)
-
-    # log fold-change: (n_cells, n_genes)
-    if "log_fold_change" not in adata.obsm:
-        raise ValueError("Expected 'log_fold_change' in adata.obsm for per-gene rewards.")
-
-    lfc = adata.obsm["log_fold_change"]
-    if hasattr(lfc, "toarray"):
-        lfc = lfc.toarray()
-    lfc = np.asarray(lfc, dtype="float32")  # (n_cells, n_genes)
-
-    n_cells, n_perts = targets.shape
-    _, n_genes_check = lfc.shape
-    if n_genes_check != n_genes:
-        raise ValueError(f"Mismatch between n_genes from adata.n_vars ({n_genes}) and log_fold_change second dim ({n_genes_check}).")
-
-    # Compute per-perturbation × per-gene reward as mean |lfc| over cells with that perturbation
-    per_pert_gene_reward = np.zeros((n_perts, n_genes), dtype="float32")
-    for p in range(n_perts):
-        mask = targets[:, p] > 0.5
-        if np.any(mask):
-            per_pert_gene_reward[p] = np.mean(np.abs(lfc[mask]), axis=0)
-        else:
-            per_pert_gene_reward[p] = 0.0
-
-    # Transpose to (n_genes, n_perts)
-    per_gene_pert_reward = per_pert_gene_reward.T  # (n_genes, n_perts)
-
-    # Normalize per gene across perturbations to form probability distributions
-    sum_per_gene = np.sum(per_gene_pert_reward, axis=-1, keepdims=True)
-    sum_per_gene = np.where(sum_per_gene == 0.0, 1.0, sum_per_gene)  # avoid division by zero
-    per_gene_pert_dist = per_gene_pert_reward / sum_per_gene  # (n_genes, n_perts)
-
-    # ------------------------
-    # Label smoothing / temperature scaling
-    # ------------------------
-    # Many genes will have very peaked reward distributions over
-    # perturbations. To avoid punishing near-misses too harshly and to
-    # stabilize KL, we apply:
-    #   1) a softmax with temperature < 1 over per_gene_pert_reward
-    #   2) light label smoothing toward a uniform distribution.
-    temperature = 0.7
-    # Recompute a softmax distribution with temperature
-    logits = per_gene_pert_reward / max(temperature, 1e-6)
-    # For numerical stability, subtract max per row before exp
-    logits = logits - np.max(logits, axis=-1, keepdims=True)
-    exp_logits = np.exp(logits)
-    exp_sum = np.sum(exp_logits, axis=-1, keepdims=True)
-    exp_sum = np.where(exp_sum == 0.0, 1.0, exp_sum)
-    softmax_dist = exp_logits / exp_sum
-
-    # Label smoothing toward uniform over perturbations
-    smoothing = 0.05
-    uniform = np.full_like(softmax_dist, 1.0 / n_perts)
-    per_gene_pert_dist = (1.0 - smoothing) * softmax_dist + smoothing * uniform
-
-    # Sanity logging for policy targets
-    logger.info(
-        "Policy target stats - min: %.6f, max: %.6f, mean: %.6f",
-        float(per_gene_pert_dist.min()),
-        float(per_gene_pert_dist.max()),
-        float(per_gene_pert_dist.mean()),
-    )
-
-    # Batch dimension for policy target
-    graph_policy_target = per_gene_pert_dist[np.newaxis, ...]  # (1, n_genes, n_perts)
-
-    # Per-gene scalar value target: mean (unnormalized) reward over perturbations
-    per_gene_value = np.mean(per_gene_pert_reward, axis=-1, keepdims=True)  # (n_genes, 1)
-    graph_value_target = per_gene_value[np.newaxis, ...]  # (1, n_genes, 1)
-
-    # Sanity logging for value targets
-    logger.info(
-        "Value target stats - min: %.6f, max: %.6f, mean: %.6f",
-        float(per_gene_value.min()),
-        float(per_gene_value.max()),
-        float(per_gene_value.mean()),
-    )
-
-    # Targets for policy and value heads
-    y_targets = [graph_policy_target, graph_value_target]
-
-    # ------------------------
-    # Build HyperPerturbModel on this graph
-    # ------------------------
     strategy = tf.distribute.get_strategy()
     with strategy.scope():
-        # Choose model architecture: hyperbolic default vs Euclidean baseline
         if euclidean_baseline:
             from hyperpreturb.models import EuclideanGraphConv
 
-            class EuclideanPerturbModel(HyperPerturbModel):
-                """HyperPerturbModel variant that uses EuclideanGraphConv.
+            class EuclideanPerturbModel(SignedHyperPerturbModel):
+                """SignedHyperPerturbModel variant that uses EuclideanGraphConv."""
 
-                This replaces all HyperbolicGraphConv layers in the encoder,
-                policy, and value paths with EuclideanGraphConv for ablation.
-                """
-
-                def __init__(self, num_genes, num_perts, curvature=1.0, **kwargs):
-                    super().__init__(num_genes, num_perts, curvature, **kwargs)
-                    # Override GCN layers with Euclidean versions
+                def __init__(self, num_genes, curvature=1.0, **kwargs):
+                    super().__init__(num_genes=num_genes, curvature=curvature, **kwargs)
                     self.encoder_gcn1 = EuclideanGraphConv(512)
                     self.encoder_gcn2 = EuclideanGraphConv(256)
                     self.policy_gcn = EuclideanGraphConv(128)
@@ -324,68 +248,49 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
 
             base_model_cls = EuclideanPerturbModel
         else:
-            base_model_cls = HyperPerturbModel
+            base_model_cls = SignedHyperPerturbModel
 
-        # Wrap model in a debug-aware subclass so that Keras always calls
-        # with internal debug checks enabled. In policy_only+debug mode,
-        # expose only the policy output so the model is single-output.
         if debug:
             if policy_only:
+
                 class DebugPolicyOnlyModel(base_model_cls):  # type: ignore[misc]
                     def call(self, inputs, training=False, debug=False):  # type: ignore[override]
-                        policy_logits, _ = super().call(inputs, training=training, debug=True)
-                        return policy_logits
+                        policy_scores, _ = super().call(inputs, training=training, debug=True)
+                        return policy_scores
 
-                model = DebugPolicyOnlyModel(
-                    num_genes=n_genes,
-                    num_perts=n_perts,
-                    curvature=curvature,
-                )
+                model = DebugPolicyOnlyModel(num_genes=n_genes, curvature=curvature)
             else:
+
                 class DebugHyperPerturbModel(base_model_cls):  # type: ignore[misc]
                     def call(self, inputs, training=False, debug=False):  # type: ignore[override]
                         return super().call(inputs, training=training, debug=True)
 
-                model = DebugHyperPerturbModel(
-                    num_genes=n_genes,
-                    num_perts=n_perts,
-                    curvature=curvature,
-                )
+                model = DebugHyperPerturbModel(num_genes=n_genes, curvature=curvature)
         else:
-            model = base_model_cls(
-                num_genes=n_genes,
-                num_perts=n_perts,
-                curvature=curvature,
-            )
+            model = base_model_cls(num_genes=n_genes, curvature=curvature)
 
-        # Optimizer:
-        # - debug mode: plain Adam with constant small LR (no manifold)
-        # - normal mode: original HyperbolicAdam with QuantumAnnealer schedule
         if debug:
             optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
         else:
-            q_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
+            lr_schedule = QuantumAnnealer(learning_rate, T_max=epochs)
             optimizer = HyperbolicAdam(
-                learning_rate=q_schedule,
+                learning_rate=lr_schedule,
                 manifold=PoincareBall(curvature),
             )
 
-        # Loss configuration:
-        # - policy_only: only policy KL + policy metrics
-        # - default: joint policy KL + value MSE losses
         if policy_only:
-            loss = [safe_kl_divergence(name="policy_kld")]
+            loss = masked_signed_huber_loss(name="policy_huber")
             loss_weights = None
-            metrics = [tf.keras.metrics.MeanAbsoluteError(name="policy_mae")]
-            y_used = [graph_policy_target]
+            metrics = [masked_signed_mae(name="policy_mae")]
+            y_used = graph_policy_target
         else:
             loss = [
-                safe_kl_divergence(name="policy_kld"),
+                masked_signed_huber_loss(name="policy_huber"),
                 tf.keras.losses.MeanSquaredError(name="value_mse"),
             ]
             loss_weights = [1.0, 0.5]
             metrics = [
-                tf.keras.metrics.MeanAbsoluteError(name="policy_mae"),
+                masked_signed_mae(name="policy_mae"),
                 tf.keras.metrics.MeanAbsoluteError(name="value_mae"),
             ]
             y_used = y_targets
@@ -397,76 +302,75 @@ def train_model(adata, adj_matrix=None, model_dir="models/saved",
             metrics=metrics,
         )
 
-        # Warm-up call to build variables with concrete graph input shapes.
-        _ = model((
-            tf.zeros((1, n_genes, 1), dtype=tf.float32),
-            tf.zeros((1, n_genes, n_genes), dtype=tf.float32),
-        ))
+        _ = model(
+            (
+                tf.zeros((1, n_genes, 1), dtype=tf.float32),
+                tf.zeros((1, n_genes, n_genes), dtype=tf.float32),
+            )
+        )
 
-    # NaN / Inf monitoring callback (debug mode)
     class NaNMonitor(tf.keras.callbacks.Callback):
         def on_epoch_end(self, epoch, logs=None):
             logs = logs or {}
-            bad = False
-            for k, v in logs.items():
-                if v is None:
+            bad_metric = False
+            for metric_name, metric_value in logs.items():
+                if metric_value is None:
                     continue
-                if isinstance(v, (float, int)):
-                    if not np.isfinite(v):
-                        logger.warning(f"Epoch {epoch}: metric {k} is non-finite: {v}")
-                        bad = True
-            if bad and debug:
+                if isinstance(metric_value, (float, int)) and not np.isfinite(metric_value):
+                    logger.warning("Epoch %s: metric %s is non-finite: %s", epoch, metric_name, metric_value)
+                    bad_metric = True
+            if bad_metric and debug:
                 logger.error("Non-finite metrics detected; stopping training early due to debug mode.")
                 self.model.stop_training = True
 
-    # Set up callbacks
     callbacks: list[tf.keras.callbacks.Callback] = [curriculum]
-
     if debug:
         callbacks.append(NaNMonitor())
     else:
-        callbacks.extend([
-            tf.keras.callbacks.TensorBoard(
-                log_dir=os.path.join(model_path, 'logs'),
-                histogram_freq=1,
-                update_freq=100
-            ),
-            tf.keras.callbacks.ModelCheckpoint(
-                filepath=os.path.join(model_path, 'checkpoints', 'model_{epoch:02d}.keras'),
-                save_best_only=True,
-                monitor='loss'
-            ),
-            tf.keras.callbacks.EarlyStopping(
-                monitor='loss',
-                patience=20,
-                restore_best_weights=True
-            ),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='loss',
-                factor=0.5,
-                patience=10,
-                min_lr=1e-6
-            )
-        ])
-    
-    # Prepare inputs with batch dimension = 1
-    x_gene = gene_features[np.newaxis, ...]          # (1, n_genes, 1)
-    x_adj = adj_matrix[np.newaxis, ...]             # (1, n_genes, n_genes)
+        os.makedirs(os.path.join(model_path, "checkpoints"), exist_ok=True)
+        callbacks.extend(
+            [
+                tf.keras.callbacks.TensorBoard(
+                    log_dir=os.path.join(model_path, "logs"),
+                    histogram_freq=1,
+                    update_freq=100,
+                ),
+                tf.keras.callbacks.ModelCheckpoint(
+                    filepath=os.path.join(model_path, "checkpoints", "model_{epoch:02d}.keras"),
+                    save_best_only=True,
+                    monitor="loss",
+                ),
+                tf.keras.callbacks.EarlyStopping(
+                    monitor="loss",
+                    patience=20,
+                    restore_best_weights=True,
+                ),
+                tf.keras.callbacks.ReduceLROnPlateau(
+                    monitor="loss",
+                    factor=0.5,
+                    patience=10,
+                    min_lr=1e-6,
+                ),
+            ]
+        )
 
-    logger.info(f"Starting training for {epochs} epochs with batch size {batch_size}")
-    history = model.fit(
-        x=[x_gene, x_adj],
-        y=y_used,
-        epochs=epochs,
-        batch_size=1,  # graph-level batch
-        validation_split=0.0,
-        callbacks=callbacks,
-        verbose=1,
-    )
-    
-    # Save final model in Keras format.
-    final_path = os.path.join(model_path, 'final_model.keras')
+    logger.info("Starting training for %s epochs with batch size %s", epochs, batch_size)
+    fit_kwargs = {
+        "x": [x_gene, x_adj],
+        "y": y_used,
+        "epochs": epochs,
+        "batch_size": 1,
+        "validation_split": 0.0,
+        "callbacks": callbacks,
+        "verbose": 1,
+    }
+    if validation_data is not None:
+        fit_kwargs["validation_data"] = validation_data
+
+    history = model.fit(**fit_kwargs)
+
+    final_path = os.path.join(model_path, "final_model.keras")
     model.save(final_path)
-    logger.info(f"Model saved to {final_path}")
-    
+    logger.info("Model saved to %s", final_path)
+
     return model, history

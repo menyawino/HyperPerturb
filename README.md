@@ -169,6 +169,7 @@ hyperpreturb/
 - **Directionality not modeled in policy target**: policy supervision is based on magnitude `|log fold-change|`.
 - **Benchmarking not included in this repository**: GEARS/CPA/scGEN comparisons are out of scope for the current codebase.
 - **Dataset coverage**: primary workflow is built around Frangieh & Izar (2021)-style perturbation screens.
+- **Improvement roadmap**: see [ROADMAP.md](ROADMAP.md) for the prioritized scientific and engineering backlog.
 
 ## Why hyperbolic?
 

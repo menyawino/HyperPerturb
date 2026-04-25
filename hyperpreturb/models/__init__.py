@@ -249,6 +249,73 @@ class HyperPerturbModel(tf.keras.Model):
 
         return policy_logits, value
 
+
+class SignedHyperPerturbModel(tf.keras.Model):
+    """Graph model that predicts signed perturbation effects in gene space.
+
+    Encoder: 2 GCN layers (first hyperbolic, second euclidean) + norm + dropout.
+    Policy head: shared query/key projections over gene embeddings to score every
+    response-gene/perturbation-gene pair with a signed effect.
+    Value head: per-gene scalar sensitivity score.
+    """
+
+    def __init__(self, num_genes, curvature=1.0, **kwargs):
+        super().__init__(**kwargs)
+        self.manifold = PoincareBall(curvature)
+        self.num_genes = num_genes
+
+        self.encoder_gcn1 = HyperbolicGraphConv(
+            512, curvature=curvature, euclidean_mode=False
+        )
+        self.encoder_norm = tf.keras.layers.LayerNormalization()
+        self.encoder_gcn2 = HyperbolicGraphConv(
+            256, curvature=curvature, euclidean_mode=True
+        )
+        self.encoder_dropout = tf.keras.layers.Dropout(0.3)
+
+        self.policy_gcn = HyperbolicGraphConv(
+            128, curvature=curvature, euclidean_mode=True
+        )
+        self.policy_query = tf.keras.layers.Dense(128, use_bias=False, name="policy_query")
+        self.policy_key = tf.keras.layers.Dense(128, use_bias=False, name="policy_key")
+
+        self.value_gcn = HyperbolicGraphConv(
+            128, curvature=curvature, euclidean_mode=False
+        )
+        self.value_dense = tf.keras.layers.Dense(1, name="value_output")
+
+    def call(self, inputs, training=False, debug=False):
+        x, adj = inputs
+
+        h = self.encoder_gcn1((x, adj))
+        if debug:
+            tf.debugging.check_numerics(h, "NaN/Inf after encoder_gcn1")
+        h = self.encoder_norm(h)
+        h = self.encoder_gcn2((h, adj))
+        if debug:
+            tf.debugging.check_numerics(h, "NaN/Inf after encoder_gcn2")
+        h = self.encoder_dropout(h, training=training)
+
+        policy_h = self.policy_gcn((h, adj))
+        if debug:
+            tf.debugging.check_numerics(policy_h, "NaN/Inf after policy_gcn")
+
+        query = self.policy_query(policy_h)
+        key = self.policy_key(policy_h)
+        scale = tf.math.sqrt(tf.cast(tf.shape(query)[-1], query.dtype))
+        policy_scores = tf.linalg.matmul(query, key, transpose_b=True) / scale
+        if debug:
+            tf.debugging.check_numerics(policy_scores, "NaN/Inf after signed policy head")
+
+        value_h = self.value_gcn((h, adj))
+        if debug:
+            tf.debugging.check_numerics(value_h, "NaN/Inf after value_gcn")
+        value = self.value_dense(value_h)
+        if debug:
+            tf.debugging.check_numerics(value, "NaN/Inf after value_dense")
+
+        return policy_scores, value
+
 class HyperbolicPerturbationModel(tf.keras.Model):
     """Simpler perturbation model: one-hot -> hyperbolic dense layers -> predicted logFC.
 
@@ -302,6 +369,7 @@ class HyperbolicPerturbationModel(tf.keras.Model):
 # Add to exports
 __all__ = [
     'HyperPerturbModel',
+    'SignedHyperPerturbModel',
     'HyperbolicPerturbationModel',
     'HyperbolicGraphConv',
     'EuclideanGraphConv',

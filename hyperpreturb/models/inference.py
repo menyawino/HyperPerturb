@@ -4,8 +4,9 @@ import pandas as pd
 import os
 import json
 
-from hyperpreturb.models import HyperPerturbModel
+from hyperpreturb.models import HyperPerturbModel, SignedHyperPerturbModel
 from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
+from hyperpreturb.models.training_utils import build_graph_inputs
 from hyperpreturb.utils.manifolds import PoincareBall
 
 class HyperPerturbInference:
@@ -32,6 +33,7 @@ class HyperPerturbInference:
             'HyperbolicAdam': HyperbolicAdam,
             'QuantumAnnealer': QuantumAnnealer,
             'HyperPerturbModel': HyperPerturbModel,
+            'SignedHyperPerturbModel': SignedHyperPerturbModel,
         }
         
         # Load model
@@ -46,12 +48,12 @@ class HyperPerturbInference:
         print(f"Model successfully loaded from {self.model_path}")
     
     def predict_perturbations(self, expression_data, adj_matrix, k=5):
-        """Get top-k perturbation predictions for each gene.
+        """Get top-k predicted perturbation genes for each response gene.
 
         Args:
             expression_data: Cell x gene matrix used to derive graph node features.
             adj_matrix: Gene x gene adjacency matrix used during training.
-            k: Number of top perturbations per gene.
+            k: Number of top perturbation genes per response gene.
         """
         if self.model is None:
             raise ValueError("Model not loaded. Initialize with a valid model path.")
@@ -68,26 +70,18 @@ class HyperPerturbInference:
             raise ValueError(f"Input data has {expression_data.shape[1]} genes, "
                              f"but model expects {self.config.get('n_genes')}.")
 
-        gene_features = np.mean(expression_data, axis=0, keepdims=False).astype("float32")
-        gene_features = gene_features[:, np.newaxis]  # (n_genes, 1)
-        x_gene = gene_features[np.newaxis, ...]       # (1, n_genes, 1)
+        class _ExpressionWrapper:
+            def __init__(self, matrix):
+                self.X = matrix
+                self.n_vars = matrix.shape[1]
 
-        if isinstance(adj_matrix, tf.SparseTensor):
-            adj_matrix = tf.sparse.to_dense(adj_matrix)
-        adj_matrix = tf.convert_to_tensor(adj_matrix, dtype=tf.float32)
-        if adj_matrix.shape.rank != 2:
-            raise ValueError(f"adj_matrix must be rank-2, got rank {adj_matrix.shape.rank}")
-        if adj_matrix.shape[0] != self.config.get("n_genes") or adj_matrix.shape[1] != self.config.get("n_genes"):
-            raise ValueError(
-                f"adj_matrix shape must be ({self.config.get('n_genes')}, {self.config.get('n_genes')}), got {adj_matrix.shape}"
-            )
-        x_adj = adj_matrix[tf.newaxis, ...]           # (1, n_genes, n_genes)
+        x_gene, x_adj = build_graph_inputs(_ExpressionWrapper(expression_data), adj_matrix=adj_matrix)
 
         # Make predictions
-        logits, values = self.model.predict((x_gene, x_adj), verbose=0)
+        signed_effects, values = self.model.predict((x_gene, x_adj), verbose=0)
 
-        # Get top k perturbations per gene
-        perturbation_scores = tf.convert_to_tensor(logits, dtype=tf.float32)
+        # Rank perturbation genes by highest positive predicted effect.
+        perturbation_scores = tf.convert_to_tensor(signed_effects, dtype=tf.float32)
         n_perts = int(perturbation_scores.shape[-1])
         if k > n_perts:
             raise ValueError(f"k={k} exceeds number of perturbations ({n_perts})")
@@ -98,11 +92,13 @@ class HyperPerturbInference:
     def interpret_perturbations(self, adata, top_k_indices, gene_names=None):
         """Map perturbation indices back to gene names.
 
-        If ``gene_names`` is not provided, this uses ``adata.var_names``.
-        Returns a DataFrame with one row per cell and predicted perturbation genes.
+        If ``gene_names`` is not provided, this first uses the saved model's
+        gene_names from config.json and then falls back to ``adata.var_names``.
         """
         if gene_names is None:
-            if hasattr(adata, 'var_names'):
+            if self.config is not None and self.config.get("gene_names"):
+                gene_names = self.config["gene_names"]
+            elif hasattr(adata, 'var_names'):
                 gene_names = adata.var_names
             else:
                 raise ValueError("Gene names not provided and not found in AnnData object")
