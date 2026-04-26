@@ -1,3 +1,6 @@
+import json
+import os
+
 import numpy as np
 import scipy.sparse as sp
 import tensorflow as tf
@@ -5,6 +8,111 @@ import tensorflow as tf
 
 DEFAULT_PERTURBATION_KEY = "perturbation"
 DEFAULT_CONTROL_VALUE = "non-targeting"
+
+
+def _normalize_mapping_targets(raw_targets):
+    if isinstance(raw_targets, str):
+        return [{"gene": raw_targets, "weight": 1.0}]
+
+    if isinstance(raw_targets, (list, tuple)) and raw_targets and all(
+        isinstance(target, dict) and "gene" in target and "weight" in target
+        for target in raw_targets
+    ):
+        normalized = []
+        total_weight = 0.0
+        for target in raw_targets:
+            weight = float(target["weight"])
+            if weight <= 0.0:
+                raise ValueError("Perturbation-to-gene mapping weights must be positive.")
+            normalized.append({"gene": str(target["gene"]), "weight": weight})
+            total_weight += weight
+        for entry in normalized:
+            entry["weight"] /= total_weight
+        return normalized
+
+    if isinstance(raw_targets, dict):
+        if not raw_targets:
+            raise ValueError("Perturbation-to-gene mapping entries cannot be empty.")
+        normalized = []
+        total_weight = 0.0
+        for gene_name, raw_weight in raw_targets.items():
+            weight = float(raw_weight)
+            if weight <= 0.0:
+                raise ValueError("Perturbation-to-gene mapping weights must be positive.")
+            normalized.append({"gene": str(gene_name), "weight": weight})
+            total_weight += weight
+        for entry in normalized:
+            entry["weight"] /= total_weight
+        return normalized
+
+    if isinstance(raw_targets, (list, tuple, set)):
+        targets = [str(target) for target in raw_targets]
+        if not targets:
+            raise ValueError("Perturbation-to-gene mapping entries cannot be empty.")
+        weight = 1.0 / len(targets)
+        return [{"gene": target, "weight": weight} for target in targets]
+
+    raise TypeError(
+        "Perturbation-to-gene mapping entries must be a gene name, a list of gene names, or a gene-to-weight dictionary."
+    )
+
+
+def normalize_perturbation_gene_map(perturbation_gene_map):
+    """Normalize heterogeneous mapping inputs to a JSON-serializable format."""
+    if perturbation_gene_map is None:
+        return None
+
+    normalized = {}
+    for perturbation_name, raw_targets in perturbation_gene_map.items():
+        normalized[str(perturbation_name)] = _normalize_mapping_targets(raw_targets)
+    return normalized
+
+
+def load_perturbation_gene_map(mapping_path):
+    """Load perturbation-to-gene mappings from JSON or delimited text."""
+    if mapping_path is None:
+        return None
+    if not os.path.exists(mapping_path):
+        raise FileNotFoundError(f"Perturbation mapping file not found: {mapping_path}")
+
+    _, extension = os.path.splitext(mapping_path)
+    extension = extension.lower()
+    if extension == ".json":
+        with open(mapping_path, "r", encoding="utf-8") as handle:
+            return normalize_perturbation_gene_map(json.load(handle))
+
+    import pandas as pd
+
+    mapping_df = pd.read_csv(mapping_path, sep=None, engine="python")
+    perturbation_column = next(
+        (
+            column
+            for column in ["perturbation", "perturbation_label", "condition", "guide", "guide_id"]
+            if column in mapping_df.columns
+        ),
+        None,
+    )
+    gene_column = next(
+        (column for column in ["gene", "gene_symbol", "target_gene", "target"] if column in mapping_df.columns),
+        None,
+    )
+    if perturbation_column is None or gene_column is None:
+        raise ValueError(
+            "Perturbation mapping tables must contain a perturbation column and a gene column. "
+            f"Available columns: {list(mapping_df.columns)}"
+        )
+
+    weight_column = next((column for column in ["weight", "mapping_weight"] if column in mapping_df.columns), None)
+    mapping = {}
+    for perturbation_name, group in mapping_df.groupby(perturbation_column):
+        entries = {}
+        for _, row in group.iterrows():
+            gene_name = str(row[gene_column])
+            raw_weight = 1.0 if weight_column is None else float(row[weight_column])
+            entries[gene_name] = entries.get(gene_name, 0.0) + raw_weight
+        mapping[str(perturbation_name)] = entries
+
+    return normalize_perturbation_gene_map(mapping)
 
 
 def to_dense_array(matrix, dtype="float32"):
@@ -160,19 +268,44 @@ def compute_split_log_fold_change(
     return x_dense - control_mean
 
 
-def resolve_gene_aligned_perturbations(adata, perturbation_names):
-    """Map perturbation labels to gene indices in adata.var_names."""
+def resolve_gene_aligned_perturbations(adata, perturbation_names, perturbation_gene_map=None):
+    """Resolve perturbation labels into gene-space targets in adata.var_names."""
     gene_names = [str(name) for name in adata.var_names.tolist()]
     gene_to_index = {gene_name: idx for idx, gene_name in enumerate(gene_names)}
-    missing = [name for name in perturbation_names if name not in gene_to_index]
+    normalized_map = normalize_perturbation_gene_map(perturbation_gene_map)
+
+    resolved = {}
+    missing = []
+    for perturbation_name in perturbation_names:
+        targets = None
+        if normalized_map is not None:
+            targets = normalized_map.get(str(perturbation_name))
+        if targets is None:
+            targets = [{"gene": str(perturbation_name), "weight": 1.0}]
+
+        resolved_targets = []
+        for target in targets:
+            gene_name = str(target["gene"])
+            if gene_name not in gene_to_index:
+                missing.append(f"{perturbation_name}->{gene_name}")
+                continue
+            resolved_targets.append(
+                {
+                    "gene_name": gene_name,
+                    "gene_index": gene_to_index[gene_name],
+                    "weight": float(target["weight"]),
+                }
+            )
+        resolved[str(perturbation_name)] = resolved_targets
+
     if missing:
         preview = ", ".join(missing[:10])
         raise ValueError(
-            "Perturbation labels must map directly to genes in adata.var_names for "
-            f"gene-space scoring. Missing labels: {preview}"
+            "Perturbation labels must either match genes in adata.var_names or be provided via an explicit perturbation-to-gene map. "
+            f"Missing mappings: {preview}"
         )
 
-    return [gene_to_index[name] for name in perturbation_names]
+    return resolved
 
 
 def pack_masked_policy_targets(policy_target, policy_mask):
@@ -185,6 +318,7 @@ def build_signed_effect_targets(
     supervised_perturbations,
     perturbation_key=DEFAULT_PERTURBATION_KEY,
     control_value=DEFAULT_CONTROL_VALUE,
+    perturbation_gene_map=None,
 ):
     """Build signed gene x perturbation targets in gene space.
 
@@ -199,7 +333,11 @@ def build_signed_effect_targets(
     if not supervised_perturbations:
         raise ValueError("supervised_perturbations must contain at least one held-in perturbation.")
 
-    perturbation_indices = resolve_gene_aligned_perturbations(adata, supervised_perturbations)
+    resolved_perturbations = resolve_gene_aligned_perturbations(
+        adata,
+        supervised_perturbations,
+        perturbation_gene_map=perturbation_gene_map,
+    )
     signed_log_fold_change = compute_split_log_fold_change(
         adata,
         perturbation_key=perturbation_key,
@@ -209,8 +347,9 @@ def build_signed_effect_targets(
     n_genes = adata.n_vars
     policy_target = np.zeros((n_genes, n_genes), dtype="float32")
     policy_mask = np.zeros((n_genes, n_genes), dtype="float32")
+    policy_weight_sums = np.zeros((n_genes,), dtype="float32")
 
-    for perturbation_name, perturbation_index in zip(supervised_perturbations, perturbation_indices):
+    for perturbation_name in supervised_perturbations:
         perturbation_mask = labels == perturbation_name
         if not np.any(perturbation_mask):
             raise ValueError(
@@ -218,8 +357,19 @@ def build_signed_effect_targets(
             )
 
         mean_effect = np.mean(signed_log_fold_change[perturbation_mask], axis=0).astype("float32")
-        policy_target[:, perturbation_index] = mean_effect
-        policy_mask[:, perturbation_index] = 1.0
+        for target in resolved_perturbations[str(perturbation_name)]:
+            gene_index = target["gene_index"]
+            weight = target["weight"]
+            policy_target[:, gene_index] += mean_effect * weight
+            policy_weight_sums[gene_index] += weight
+
+    perturbation_indices = [int(index) for index in np.flatnonzero(policy_weight_sums > 0.0)]
+    if not perturbation_indices:
+        raise ValueError("No supervised gene columns were resolved for the provided perturbations.")
+
+    for gene_index in perturbation_indices:
+        policy_target[:, gene_index] /= policy_weight_sums[gene_index]
+        policy_mask[:, gene_index] = 1.0
 
     supervised_effects = policy_target[:, perturbation_indices]
     value_target = np.mean(np.abs(supervised_effects), axis=-1, keepdims=True).astype("float32")
@@ -230,6 +380,10 @@ def build_signed_effect_targets(
         {
             "perturbation_indices": perturbation_indices,
             "supervised_perturbations": list(supervised_perturbations),
+            "resolved_perturbation_gene_map": {
+                perturbation_name: resolved_perturbations[str(perturbation_name)]
+                for perturbation_name in supervised_perturbations
+            },
         },
     )
 

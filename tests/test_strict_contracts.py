@@ -7,6 +7,8 @@ from hyperpreturb.data import load_and_preprocess_perturbation_data, prepare_per
 from hyperpreturb.models.inference import HyperPerturbInference
 from hyperpreturb.models.training_utils import (
     build_signed_effect_targets,
+    load_perturbation_gene_map,
+    normalize_perturbation_gene_map,
     split_anndata_by_perturbation,
 )
 from hyperpreturb.models.train import train_model
@@ -99,6 +101,26 @@ def test_build_signed_effect_targets_preserves_directionality():
     assert np.all(supervision_mask[:, metadata["perturbation_indices"][0]] == 1.0)
     assert np.all(supervision_mask[:, metadata["perturbation_indices"][1]] == 1.0)
     assert np.all(supervision_mask[:, 2] == 0.0)
+
+
+def test_build_signed_effect_targets_supports_explicit_label_mapping():
+    adata = make_adata()
+    adata.obs["perturbation"] = ["non-targeting", "non-targeting", "sgTP53_a", "sgBRCA1_a", "sgTP53_b", "sgBRCA1_b"]
+
+    policy_target, value_target, metadata = build_signed_effect_targets(
+        adata,
+        supervised_perturbations=["sgTP53_a", "sgBRCA1_a"],
+        perturbation_gene_map={
+            "sgTP53_a": "TP53",
+            "sgBRCA1_a": "BRCA1",
+        },
+    )
+
+    signed_effects = policy_target[0, :, :adata.n_vars]
+    np.testing.assert_allclose(signed_effects[:, 0], [1.0, -1.0, 0.5])
+    np.testing.assert_allclose(signed_effects[:, 1], [1.0, -1.0, 0.0])
+    np.testing.assert_allclose(value_target[0, :, 0], [1.0, 1.0, 0.25])
+    assert metadata["perturbation_indices"] == [0, 1]
 
 
 def test_advanced_train_supports_held_out_perturbations(tmp_path):
@@ -201,6 +223,42 @@ def test_load_protein_network_auto_detects_mapping_file(tmp_path):
 
     assert list(network_df["protein1_gene"]) == ["TP53"]
     assert list(network_df["protein2_gene"]) == ["BRCA1"]
+
+
+def test_load_perturbation_gene_map_from_csv(tmp_path):
+    mapping_path = tmp_path / "perturbation_map.csv"
+    mapping_path.write_text(
+        "perturbation,gene,weight\nsgTP53,TP53,1.0\ncombo,TP53,0.5\ncombo,BRCA1,0.5\n",
+        encoding="utf-8",
+    )
+
+    perturbation_gene_map = load_perturbation_gene_map(str(mapping_path))
+
+    assert perturbation_gene_map["sgTP53"] == [{"gene": "TP53", "weight": 1.0}]
+    assert perturbation_gene_map["combo"] == [
+        {"gene": "TP53", "weight": 0.5},
+        {"gene": "BRCA1", "weight": 0.5},
+    ]
+
+
+def test_normalize_perturbation_gene_map_is_idempotent():
+    normalized = normalize_perturbation_gene_map(
+        {
+            "sgTP53": [{"gene": "TP53", "weight": 1.0}],
+            "combo": [
+                {"gene": "TP53", "weight": 0.5},
+                {"gene": "BRCA1", "weight": 0.5},
+            ],
+        }
+    )
+
+    assert normalized == {
+        "sgTP53": [{"gene": "TP53", "weight": 1.0}],
+        "combo": [
+            {"gene": "TP53", "weight": 0.5},
+            {"gene": "BRCA1", "weight": 0.5},
+        ],
+    }
 
 
 def test_interpret_perturbations_reports_response_genes():

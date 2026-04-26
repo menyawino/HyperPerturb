@@ -316,6 +316,25 @@ class SignedHyperPerturbModel(tf.keras.Model):
 
         return policy_scores, value
 
+    def get_config(self):
+        config = super().get_config()
+        config.update({
+            "num_genes": self.num_genes,
+            "curvature": self.manifold.c.numpy() if hasattr(self.manifold.c, "numpy") else self.manifold.c
+        })
+        return config
+
+
+class EuclideanPerturbModel(SignedHyperPerturbModel):
+    """SignedHyperPerturbModel variant that uses Euclidean graph convolutions."""
+
+    def __init__(self, num_genes, curvature=1.0, **kwargs):
+        super().__init__(num_genes=num_genes, curvature=curvature, **kwargs)
+        self.encoder_gcn1 = EuclideanGraphConv(512)
+        self.encoder_gcn2 = EuclideanGraphConv(256)
+        self.policy_gcn = EuclideanGraphConv(128)
+        self.value_gcn = EuclideanGraphConv(128)
+
 class HyperbolicPerturbationModel(tf.keras.Model):
     """Simpler perturbation model: one-hot -> hyperbolic dense layers -> predicted logFC.
 
@@ -370,6 +389,7 @@ class HyperbolicPerturbationModel(tf.keras.Model):
 __all__ = [
     'HyperPerturbModel',
     'SignedHyperPerturbModel',
+    'EuclideanPerturbModel',
     'HyperbolicPerturbationModel',
     'HyperbolicGraphConv',
     'EuclideanGraphConv',

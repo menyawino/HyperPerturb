@@ -8,13 +8,13 @@ from hyperpreturb.utils.data_loader import load_protein_network, create_adjacenc
 # Load network with high confidence (score > 700)
 network_df = load_protein_network(
     string_path="data/raw/protein.links.v12.0.txt",
-    gene_mapping_path=None,
+    gene_mapping_path="data/raw/protein.info.v12.0.txt",
     confidence=700
 )
 
 print(f"Loaded {len(network_df)} high-confidence protein interactions")
 
-# Get an example set of genes
+# Get an example set of genes aligned to gene symbols
 example_genes = network_df['protein1_gene'].dropna().unique()[:1000]
 
 # Create adjacency matrix

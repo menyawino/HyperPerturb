@@ -6,7 +6,7 @@ import numpy as np
 import scanpy as sc
 import tensorflow as tf
 
-from hyperpreturb.models import HyperPerturbModel, SignedHyperPerturbModel
+from hyperpreturb.models import EuclideanPerturbModel, HyperPerturbModel, SignedHyperPerturbModel
 from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
 from hyperpreturb.models.training_utils import (
     DEFAULT_CONTROL_VALUE,
@@ -14,6 +14,7 @@ from hyperpreturb.models.training_utils import (
     build_graph_inputs,
     build_signed_effect_targets,
     compute_masked_policy_metrics,
+    load_perturbation_gene_map,
     split_anndata_by_perturbation,
 )
 from hyperpreturb.utils.data_loader import create_adjacency_matrix, load_protein_network
@@ -45,6 +46,7 @@ def _load_model_and_config(model_path):
         "QuantumAnnealer": QuantumAnnealer,
         "HyperPerturbModel": HyperPerturbModel,
         "SignedHyperPerturbModel": SignedHyperPerturbModel,
+        "EuclideanPerturbModel": EuclideanPerturbModel,
     }
     model = tf.keras.models.load_model(keras_path, custom_objects=custom_objects, compile=False)
     return model_dir, model, config
@@ -59,7 +61,14 @@ def _build_adjacency(adata, network_path=None, gene_mapping_path=None):
     return create_adjacency_matrix(network_df, adata.var_names.tolist())
 
 
-def evaluate(model_path, preprocessed_path, network_path=None, gene_mapping_path=None, print_output=True):
+def evaluate(
+    model_path,
+    preprocessed_path,
+    network_path=None,
+    gene_mapping_path=None,
+    perturbation_gene_map=None,
+    print_output=True,
+):
     """Evaluate a trained model on held-out perturbation conditions.
 
     Returns a metrics dictionary so callers can aggregate benchmark runs.
@@ -74,6 +83,8 @@ def evaluate(model_path, preprocessed_path, network_path=None, gene_mapping_path
     control_value = config.get("control_value", DEFAULT_CONTROL_VALUE)
     validation_split = float(config.get("validation_split", 0.0))
     seed = int(config.get("seed", 42))
+    if perturbation_gene_map is None:
+        perturbation_gene_map = config.get("perturbation_gene_map")
 
     _, validation_adata, split_metadata = split_anndata_by_perturbation(
         adata,
@@ -96,6 +107,7 @@ def evaluate(model_path, preprocessed_path, network_path=None, gene_mapping_path
         supervised_perturbations=split_metadata["validation_perturbations"],
         perturbation_key=perturbation_key,
         control_value=control_value,
+        perturbation_gene_map=perturbation_gene_map,
     )
 
     preds = model([x_gene, x_adj], training=False)
@@ -156,13 +168,21 @@ def main():
         default=None,
         help="Optional STRING protein-to-gene mapping file used to align network IDs with training genes.",
     )
+    parser.add_argument(
+        "--perturbation_gene_map_path",
+        type=str,
+        default=None,
+        help="Optional JSON/CSV/TSV mapping from perturbation labels to target genes for gene-space evaluation.",
+    )
 
     args = parser.parse_args()
+    perturbation_gene_map = load_perturbation_gene_map(args.perturbation_gene_map_path)
     evaluate(
         args.model_path,
         args.preprocessed_path,
         network_path=args.network_path,
         gene_mapping_path=args.gene_mapping_path,
+        perturbation_gene_map=perturbation_gene_map,
     )
 
 

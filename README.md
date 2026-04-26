@@ -10,6 +10,7 @@ HyperPerturb is designed as a scientific-computing pipeline with explicit contra
 
 - Required inputs are validated early; execution fails fast on missing or inconsistent data.
 - Training and inference use a graph-level contract (`gene_features`, `adj_matrix`) with strict shape checks.
+- Gene-space supervision can use an explicit perturbation-to-gene mapping layer when perturbation labels do not equal gene symbols.
 - Model serialization is single-path (`final_model.keras`) to keep runs reproducible and auditable.
 - No implicit fallback logic is used in core training/inference paths.
 
@@ -126,6 +127,29 @@ model, history = train_model(
 | `--epochs` | `30` | |
 | `--batch_size` | `16` | Advanced trainer logs this request but trains one full graph per step |
 | `--gene_mapping_path` | `None` | STRING protein-to-gene mapping file; required when network IDs are not already gene symbols |
+| `--perturbation_gene_map_path` | `None` | JSON/CSV/TSV mapping from perturbation labels to target genes for gene-space supervision |
+
+### Held-Out Benchmark
+
+The repository includes a repeated-seed benchmark runner that compares the hyperbolic model against the Euclidean graph baseline on held-out perturbation splits and writes JSON plus CSV/Markdown tables.
+
+```bash
+python scripts/benchmark_hyperbolic_vs_euclidean.py \
+    --rna_path data/benchmark_fixture/mapped_fixture.h5ad \
+    --network_path data/benchmark_fixture/network.txt \
+    --preprocessed_path data/benchmark_fixture/mapped_fixture.h5ad \
+    --perturbation_gene_map_path data/benchmark_fixture/perturbation_map.csv \
+    --output_dir models/benchmarks/mapped-fixture \
+    --epochs 2 \
+    --seeds 42 43 \
+    --val_split 0.5
+```
+
+This produces:
+
+- `benchmark_results.json`: full per-run metrics and aggregate summaries
+- `benchmark_runs.csv` / `benchmark_runs.md`: one row per variant/seed run
+- `benchmark_summary.csv` / `benchmark_summary.md`: aggregate mean/std tables across seeds
 | `--learning_rate` | `1e-5` | Higher values cause NaN divergence |
 | `--curvature` | `1.0` | Poincaré ball curvature |
 | `--seed` | `42` | Global random seed for deterministic setup |

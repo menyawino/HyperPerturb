@@ -41,6 +41,7 @@ This document explains the theoretical foundations and practical wiring of the H
   - Computes a **control mean expression per gene** using control cells from `adata.layers['normalized_counts']` when available.
   - Adds `adata.obsm['log_fold_change']` as `log1p(cell_expression) - log1p(control_mean)`.
   - Builds a one-hot matrix `adata.obsm['perturbation_target']` only for non-control perturbations.
+  - Stores optional perturbation-to-gene mappings outside this step; those mappings are consumed later when gene-space supervision is built.
 
 7. **Optional PPI / adjacency**
   - If a network file is provided, `load_protein_network` and `create_adjacency_matrix` build a gene–gene adjacency aligned to `adata.var_names`.
@@ -183,13 +184,14 @@ The `PoincareBall` class implements Riemannian geometry operations for the Poinc
 Given:
 - `lfc = adata.obsm['log_fold_change']` of shape `(n_cells, n_genes)`.
 - `supervised_perturbations`: perturbation labels held in for the current split.
+- `perturbation_gene_map`: optional explicit mapping from perturbation labels to one or more genes in `adata.var_names`.
 
 We define a signed effect target for each gene–perturbation pair:
 
 1. For each supervised perturbation gene `p`:
   - Select cells with that perturbation label.
   - Compute mean signed logFC for each response gene over those cells.
-  - Write that vector into the policy target column corresponding to perturbation gene `p`.
+  - Project that label into one or more gene-space columns using the explicit perturbation-to-gene mapping layer.
 
 2. Build a same-shape binary mask indicating which perturbation-gene columns are supervised in the current split.
 
@@ -284,7 +286,7 @@ history = model.fit(
 
 - **Reward definition:**
   - The policy target now preserves directionality, but it is still an observational average over perturbed cells rather than a causal intervention estimate.
-  - The target currently assumes perturbation labels map directly to genes in `adata.var_names`.
+  - The target now supports explicit perturbation-to-gene mappings, including multiple labels mapping onto the same target gene column.
 
 - **Averaging across cells:**
   - The per-gene, per-perturbation rewards aggregate across all cells with that perturbation.
@@ -299,7 +301,7 @@ history = model.fit(
 Potential future refinements include:
 
 - Conditioning rewards on specific cell types or states (stratified `log_fold_change`).
-- Extending supervision beyond single-gene labels that map directly into `adata.var_names`.
+- Extending supervision beyond single-gene target mappings to richer perturbation ontologies or combinatorial perturbation objects.
 - Using genuine RL loops where actions are perturbation choices and rewards come from simulated or held-out expression responses.
 
 ---

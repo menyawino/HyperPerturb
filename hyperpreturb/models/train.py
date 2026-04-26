@@ -7,7 +7,7 @@ from datetime import datetime
 import numpy as np
 import tensorflow as tf
 
-from hyperpreturb.models import SignedHyperPerturbModel
+from hyperpreturb.models import EuclideanPerturbModel, SignedHyperPerturbModel
 from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
 from hyperpreturb.models.training_utils import (
     DEFAULT_CONTROL_VALUE,
@@ -16,6 +16,7 @@ from hyperpreturb.models.training_utils import (
     build_signed_effect_targets,
     masked_signed_huber_loss,
     masked_signed_mae,
+    normalize_perturbation_gene_map,
     split_anndata_by_perturbation,
 )
 from hyperpreturb.utils.manifolds import PoincareBall
@@ -124,6 +125,7 @@ def train_model(
     deterministic=True,
     perturbation_key=DEFAULT_PERTURBATION_KEY,
     control_value=DEFAULT_CONTROL_VALUE,
+    perturbation_gene_map=None,
 ):
     """Train the advanced graph model with held-out perturbation validation.
 
@@ -136,6 +138,7 @@ def train_model(
     tf.keras.utils.set_random_seed(seed)
     if deterministic:
         tf.config.experimental.enable_op_determinism()
+    perturbation_gene_map = normalize_perturbation_gene_map(perturbation_gene_map)
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     model_path = os.path.join(model_dir, f"hyperperturb-{timestamp}")
@@ -175,6 +178,7 @@ def train_model(
         supervised_perturbations=split_metadata["train_perturbations"],
         perturbation_key=perturbation_key,
         control_value=control_value,
+        perturbation_gene_map=perturbation_gene_map,
     )
     train_effects = graph_policy_target[..., :n_genes]
     logger.info(
@@ -200,6 +204,7 @@ def train_model(
             supervised_perturbations=split_metadata["validation_perturbations"],
             perturbation_key=perturbation_key,
             control_value=control_value,
+            perturbation_gene_map=perturbation_gene_map,
         )
         val_targets = val_policy_target if policy_only else [val_policy_target, val_value_target]
         validation_data = ([val_x_gene, val_x_adj], val_targets)
@@ -220,12 +225,14 @@ def train_model(
         "split_strategy": split_metadata["split_strategy"],
         "perturbation_key": perturbation_key,
         "control_value": control_value,
+        "perturbation_gene_map": perturbation_gene_map,
         "train_perturbations": split_metadata["train_perturbations"],
         "validation_perturbations": split_metadata["validation_perturbations"],
         "train_cells": int(train_adata.n_obs),
         "validation_cells": int(validation_adata.n_obs if validation_adata is not None else 0),
         "gene_names": [str(name) for name in adata.var_names.tolist()],
         "supervised_train_columns": target_metadata["perturbation_indices"],
+        "resolved_train_perturbation_gene_map": target_metadata["resolved_perturbation_gene_map"],
     }
     with open(os.path.join(model_path, "config.json"), "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)
@@ -235,18 +242,6 @@ def train_model(
     strategy = tf.distribute.get_strategy()
     with strategy.scope():
         if euclidean_baseline:
-            from hyperpreturb.models import EuclideanGraphConv
-
-            class EuclideanPerturbModel(SignedHyperPerturbModel):
-                """SignedHyperPerturbModel variant that uses EuclideanGraphConv."""
-
-                def __init__(self, num_genes, curvature=1.0, **kwargs):
-                    super().__init__(num_genes=num_genes, curvature=curvature, **kwargs)
-                    self.encoder_gcn1 = EuclideanGraphConv(512)
-                    self.encoder_gcn2 = EuclideanGraphConv(256)
-                    self.policy_gcn = EuclideanGraphConv(128)
-                    self.value_gcn = EuclideanGraphConv(128)
-
             base_model_cls = EuclideanPerturbModel
         else:
             base_model_cls = SignedHyperPerturbModel

@@ -2,8 +2,8 @@
 # Script to download STRING network and FrangiehIzar2021 test datasets for HyperPerturb
 #
 # This script will:
-#   - Download and unpack STRING v12.0 protein-protein interaction network (all species)
-#   - Download the matching STRING protein info table for protein-to-gene mapping
+#   - Download and unpack the human STRING v12.0 protein-protein interaction network
+#   - Download the matching human STRING protein info table for protein-to-gene mapping
 #   - Download FrangiehIzar2021 protein and RNA perturbation datasets (h5ad) from Figshare
 #
 # All files are placed under data/raw/ and can be used directly
@@ -13,18 +13,42 @@
 mkdir -p data/raw
 mkdir -p data/processed
 
-# Download STRING network data (v12.0, all species, lighter file)
-echo "Downloading STRING protein-protein interaction network data (v12.0)..."
-wget -nc -O "data/raw/protein.links.v12.0.txt.gz" \
-    "https://stringdb-downloads.org/download/protein.links.v12.0.txt.gz"
+download_file() {
+    local url="$1"
+    local output_path="$2"
+
+    if command -v wget >/dev/null 2>&1; then
+        wget -nc -O "$output_path" "$url"
+        return
+    fi
+
+    if command -v curl >/dev/null 2>&1; then
+        if [ -f "$output_path" ]; then
+            echo "File already exists at $output_path, skipping download."
+            return
+        fi
+        curl -L --fail --output "$output_path" "$url"
+        return
+    fi
+
+    echo "Neither wget nor curl is available for downloading $url" >&2
+    return 1
+}
+
+# Download STRING network data (human / 9606)
+echo "Downloading STRING protein-protein interaction network data (human, v12.0)..."
+download_file \
+    "https://stringdb-downloads.org/download/protein.links.v12.0/9606.protein.links.v12.0.txt.gz" \
+    "data/raw/protein.links.v12.0.txt.gz"
 
 # Uncompress the file
 echo "Uncompressing network data..."
 gunzip -f "data/raw/protein.links.v12.0.txt.gz" || true
 
-echo "Downloading STRING protein-to-gene mapping table (v12.0)..."
-wget -nc -O "data/raw/protein.info.v12.0.txt.gz" \
-    "https://stringdb-downloads.org/download/protein.info.v12.0.txt.gz"
+echo "Downloading STRING protein-to-gene mapping table (human, v12.0)..."
+download_file \
+    "https://stringdb-downloads.org/download/protein.info.v12.0/9606.protein.info.v12.0.txt.gz" \
+    "data/raw/protein.info.v12.0.txt.gz"
 
 echo "Uncompressing protein info mapping..."
 gunzip -f "data/raw/protein.info.v12.0.txt.gz" || true
@@ -40,7 +64,7 @@ PROTEIN_H5AD_PATH="data/raw/FrangiehIzar2021_Protein.h5ad"
 if [ -f "$PROTEIN_H5AD_PATH" ]; then
     echo "Protein h5ad already exists at $PROTEIN_H5AD_PATH, skipping download."
 else
-    wget -O "$PROTEIN_H5AD_PATH" "$PROTEIN_H5AD_URL"
+    download_file "$PROTEIN_H5AD_URL" "$PROTEIN_H5AD_PATH"
 fi
 
 # Download RNA expression perturbation data (h5ad)
@@ -49,7 +73,7 @@ RNA_H5AD_PATH="data/raw/FrangiehIzar2021_RNA.h5ad"
 if [ -f "$RNA_H5AD_PATH" ]; then
     echo "RNA h5ad already exists at $RNA_H5AD_PATH, skipping download."
 else
-    wget -O "$RNA_H5AD_PATH" "$RNA_H5AD_URL"
+    download_file "$RNA_H5AD_URL" "$RNA_H5AD_PATH"
 fi
 
 echo "Download complete. Files saved to data/raw/"

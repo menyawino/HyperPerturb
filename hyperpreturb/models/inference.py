@@ -4,7 +4,7 @@ import pandas as pd
 import os
 import json
 
-from hyperpreturb.models import HyperPerturbModel, SignedHyperPerturbModel
+from hyperpreturb.models import EuclideanPerturbModel, HyperPerturbModel, SignedHyperPerturbModel
 from hyperpreturb.models.hyperbolic import HyperbolicAdam, QuantumAnnealer
 from hyperpreturb.models.training_utils import build_graph_inputs
 from hyperpreturb.utils.manifolds import PoincareBall
@@ -34,6 +34,7 @@ class HyperPerturbInference:
             'QuantumAnnealer': QuantumAnnealer,
             'HyperPerturbModel': HyperPerturbModel,
             'SignedHyperPerturbModel': SignedHyperPerturbModel,
+            'EuclideanPerturbModel': EuclideanPerturbModel,
         }
         
         # Load model

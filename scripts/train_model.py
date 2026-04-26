@@ -30,6 +30,7 @@ from hyperpreturb.data import (
 )
 from hyperpreturb import models
 from hyperpreturb.models.train import train_model as advanced_train_model
+from hyperpreturb.models.training_utils import load_perturbation_gene_map
 
 def download_file(url, output_path):
     """
@@ -111,6 +112,8 @@ def main():
                     help="adata.obs column containing perturbation labels.")
     parser.add_argument("--control_value", type=str, default="non-targeting",
                     help="Label in --perturbation_key that denotes control cells.")
+    parser.add_argument("--perturbation_gene_map_path", type=str, default=None,
+                    help="Optional JSON/CSV/TSV mapping from perturbation labels to target genes for gene-space supervision.")
     
     args = parser.parse_args()
     
@@ -129,11 +132,15 @@ def main():
     if args.network_path is not None and not os.path.exists(args.network_path):
         raise FileNotFoundError(f"Network file not found: {args.network_path}")
 
+    if args.perturbation_gene_map_path is not None and not os.path.exists(args.perturbation_gene_map_path):
+        raise FileNotFoundError(f"Perturbation mapping file not found: {args.perturbation_gene_map_path}")
+
     if args.trainer == "advanced" and args.network_path is None:
         raise ValueError("Advanced trainer requires --network_path with a valid gene graph file.")
     
     # Load and preprocess data
     logger.info("Loading and preprocessing data...")
+    perturbation_gene_map = load_perturbation_gene_map(args.perturbation_gene_map_path)
     adata, adj_matrix = load_and_preprocess_perturbation_data(
         args.rna_path,
         args.protein_path if args.use_protein_data else None,
@@ -273,6 +280,7 @@ def main():
             deterministic=True,
             perturbation_key=args.perturbation_key,
             control_value=args.control_value,
+            perturbation_gene_map=perturbation_gene_map,
         )
         logger.info("Advanced training completed")
 
